@@ -1,0 +1,7 @@
+.env
+*.session.json
+sessions/
+state/
+__pycache__/
+.DS_Store
+harness.*.jsonl

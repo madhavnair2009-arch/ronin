@@ -1,0 +1,31 @@
+# Fly.io config for ronin's Telegram bot.
+# Long-polling worker: NO [http_service]/[[services]] block, because the bot makes
+# only outbound calls — nothing needs to reach it. One always-on machine.
+#
+# app name is set by `fly launch`/`fly apps create` — replace if you pick another.
+app = "ronin-sports"
+primary_region = "iad"
+
+[build]
+
+[env]
+  RONIN_MODEL = "claude-opus-4-8"
+  RONIN_MAX_TOOL_CALLS = "8"
+  # Persistent memory (takes/relationships/outbound log) lives on the mounted volume
+  # so it survives deploys and restarts — otherwise the "mind" resets each ship.
+  RONIN_STATE_DIR = "/data"
+  ROAM_ENABLED = "1"
+  ROAM_INTERVAL = "1800"
+
+# Durable state volume (create once: `fly volumes create ronin_state --size 1 -r iad`).
+[mounts]
+  source = "ronin_state"
+  destination = "/data"
+
+# Keep exactly one instance always running (don't auto-stop a poller to zero).
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"
+
+[processes]
+  app = "python3 telegram_bot.py"
