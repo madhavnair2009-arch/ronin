@@ -68,6 +68,17 @@ def _session_name(sender_id):
     return f"sess_{safe}"
 
 
+# Chat messages come from untrusted strangers. Primary defense is the graff tool
+# firewall (.harness/settings.json → tool-firewall.sh) which allows ONLY the MCP
+# servers and blocks bash/file/webfetch/subagent. Defense in depth: also strip the
+# Telegram bot token from the subprocess env — graff and the MCP servers don't need
+# it, so it should never be reachable from this path even if the firewall regresses.
+def _child_env():
+    env = dict(os.environ)
+    env.pop("TELEGRAM_BOT_TOKEN", None)
+    return env
+
+
 def reply(sender_id, message):
     """Return ronin's reply string for one incoming message."""
     system_prompt = _load_system_prompt(sender_id)
@@ -83,6 +94,7 @@ def reply(sender_id, message):
     try:
         out = subprocess.run(
             cmd, cwd=ROOT, capture_output=True, text=True, timeout=TURN_TIMEOUT,
+            env=_child_env(),
         )
     except subprocess.TimeoutExpired:
         return "took too long on that one — hit me again in a sec."

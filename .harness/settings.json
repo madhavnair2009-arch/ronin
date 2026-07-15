@@ -1,0 +1,7 @@
+{
+  "hooks": {
+    "pre_tool": [
+      { "match": "*", "command": "sh .harness/tool-firewall.sh" }
+    ]
+  }
+}
