@@ -117,6 +117,8 @@ Rules:
   magnitude is how strongly. Only include teams you actually have a feeling about (up to ~6).
 - "stance" is one short sentence in your voice, and it must reference a real reason (their
   record/style/arc or one of your takes). No generic "they're good."
+- ONLY form affinities for teams that appear in the standings/champion data above. Do NOT
+  add teams from leagues you weren't shown, and never cite a record you weren't given.
 - It's fine — good, even — to be a self-aware homer or to hold a grudge. Own it.
 - Output ONLY the JSON object. No preamble, no code fence.
 """
@@ -314,9 +316,16 @@ def reflect(dry_run=False):
     if not data or not isinstance(data.get("affinities"), list):
         print("[reflect] no valid affinities returned.", file=sys.stderr)
         return
+    allowed = set(leagues)
     n = 0
     for a in data["affinities"]:
         if not isinstance(a, dict) or not a.get("abbrev"):
+            continue
+        # Grounding guard: only accept leagues we actually fed it real data for, so it
+        # can't opine on a league from memory with a possibly-wrong record.
+        if (a.get("league") or "").lower() not in allowed:
+            print(f"[reflect] dropped out-of-scope {a.get('team')} ({a.get('league')})",
+                  file=sys.stderr)
             continue
         print(f"[reflect] {a.get('team')} ({a.get('league')}): "
               f"{a.get('score')} — {a.get('stance')}", file=sys.stderr)
