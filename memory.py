@@ -238,6 +238,76 @@ def upsert_take(subject, stance, confidence, reasoning="", evidence=None):
 
 
 # ---------------------------------------------------------------------------
+# Axis: ITS ALLEGIANCES (affinity) — teams ronin roots for / against.
+# Earned, not declared: the roam reflection pass derives these from standings +
+# ronin's own takes + its value-seed (persona), and revises them with history.
+# score in [-1, 1]: +1 = loves/roots-for, -1 = roots-against. Keyed by league+abbrev
+# (stable, unlike LLM-authored take subjects — no duplication bug here).
+# ---------------------------------------------------------------------------
+def get_affinities():
+    return _read("affinity.json", [])
+
+
+def upsert_affinity(team, league, abbrev, score, stance, reasons=None, evidence=None):
+    team = (team or "").strip()
+    league = (league or "").strip().lower()
+    abbrev = (abbrev or "").strip().upper()
+    key = f"{league}:{abbrev}"
+    if not team or not abbrev:
+        return
+    try:
+        score = max(-1.0, min(1.0, float(score)))
+    except (TypeError, ValueError):
+        score = 0.0
+    now = time.time()
+
+    def go(data):
+        if not isinstance(data, list):
+            data = []
+        for a in data:
+            if a.get("key") == key:
+                changed = (stance != a.get("stance")
+                           or abs(score - float(a.get("score", 0))) > 1e-9)
+                if changed:
+                    a.setdefault("history", []).append({
+                        "score": a.get("score"), "stance": a.get("stance"),
+                        "at": a.get("updated_at", now),
+                    })
+                    a["score"] = score
+                    a["stance"] = stance
+                    a["updated_at"] = now
+                if reasons:
+                    a["reasons"] = reasons
+                for ev in (evidence or []):
+                    if ev not in a.setdefault("evidence", []):
+                        a["evidence"].append(ev)
+                return
+        data.append({
+            "key": key, "team": team, "league": league, "abbrev": abbrev,
+            "score": score, "stance": stance, "reasons": list(reasons or []),
+            "evidence": list(evidence or []), "formed_at": now, "updated_at": now,
+            "history": [],
+        })
+
+    with _FileLock():
+        cur = _read("affinity.json", [])
+        if not isinstance(cur, list):
+            cur = []
+        go(cur)
+        _write("affinity.json", cur)
+
+
+def top_affinities(n=3, threshold=0.15):
+    """Return (loves, dislikes): the strongest positive and negative allegiances."""
+    aff = [a for a in get_affinities() if isinstance(a, dict)]
+    loves = sorted([a for a in aff if a.get("score", 0) >= threshold],
+                   key=lambda a: a["score"], reverse=True)[:n]
+    dislikes = sorted([a for a in aff if a.get("score", 0) <= -threshold],
+                      key=lambda a: a["score"])[:n]
+    return loves, dislikes
+
+
+# ---------------------------------------------------------------------------
 # Axis: WORLD FACTS delta cursor (which headlines we've already seen per scope)
 # ---------------------------------------------------------------------------
 def cursor_is_cold(scope):

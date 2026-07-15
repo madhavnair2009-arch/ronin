@@ -102,12 +102,29 @@ def _handle_command(chat_id, sender, text):
     return False
 
 
+# How often (in roam ticks) ronin re-reflects on its allegiances. Reflection is the
+# slow "who do I root for" loop; news roaming is the fast one. Default: ~daily at 30-min ticks.
+REFLECT_EVERY = int(os.environ.get("ROAM_REFLECT_EVERY", "48"))
+
+
 def _roam_scheduler():
-    print(f"[roam] scheduler on, every {ROAM_INTERVAL}s", file=sys.stderr)
+    print(f"[roam] scheduler on, every {ROAM_INTERVAL}s (reflect every {REFLECT_EVERY} ticks)",
+          file=sys.stderr)
+    # Cold start: if this fresh machine has no allegiances yet, form them once now so
+    # ronin has a personality before the first daily reflection comes around.
+    try:
+        if not memory.get_affinities():
+            roam.reflect()
+    except Exception as e:  # noqa: BLE001
+        print(f"[roam] initial reflect errored: {e}", file=sys.stderr)
+    tick = 0
     while True:
         time.sleep(ROAM_INTERVAL)
+        tick += 1
         try:
             roam.run_once()
+            if tick % REFLECT_EVERY == 0:
+                roam.reflect()
         except Exception as e:  # noqa: BLE001 — never let roam kill the bot
             print(f"[roam] pass errored: {e}", file=sys.stderr)
 

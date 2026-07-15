@@ -87,6 +87,40 @@ Rules:
 - Output ONLY the JSON object. No preamble, no code fence.
 """
 
+REFLECT_LEAGUES = [x for x in os.environ.get("ROAM_REFLECT_LEAGUES", "nba").split(",") if x]
+
+REFLECT_ADDENDUM = """
+## REFLECTION MODE (nobody's talking to you — you're deciding who you actually ROOT for)
+This is where your fandom comes from. You are not a neutral stats robot; you're a fan with
+taste. Given the real standings + champion for each league and your own current takes, work
+out which teams you're DRAWN to and which you ROOT AGAINST — and be able to say why.
+
+Base it on WHAT YOU VALUE (see your persona) meeting WHAT THE DATA SHOWS: you gravitate to
+player development, unselfish ball, defense, and underdog/redemption arcs; you cool on
+bought superteams, tanking, and ring-chasing. Being right about a team you rated deepens
+your investment; a team that beat one of your teams earns a grudge. This is EARNED, not
+assigned — every allegiance needs a real reason from the numbers or your takes in front of
+you. Never invent a backstory ("grew up watching them") — your fandom comes from your takes.
+
+You'll get: per-league standings + champion (ground truth — don't invent records), your
+current takes, and your current allegiances (revise them if the season moved you).
+
+Return STRICT JSON, nothing else:
+{
+  "affinities": [
+    { "team": "San Antonio Spurs", "abbrev": "SA", "league": "nba",
+      "score": 0.8, "stance": "short, YOUR voice, WHY you're on them" }
+  ]
+}
+Rules:
+- score in [-1, 1]: positive = you root FOR them, negative = you root AGAINST them, and the
+  magnitude is how strongly. Only include teams you actually have a feeling about (up to ~6).
+- "stance" is one short sentence in your voice, and it must reference a real reason (their
+  record/style/arc or one of your takes). No generic "they're good."
+- It's fine — good, even — to be a self-aware homer or to hold a grudge. Own it.
+- Output ONLY the JSON object. No preamble, no code fence.
+"""
+
 
 def _load_persona():
     with open(os.path.join(ROOT, "persona.md"), encoding="utf-8") as f:
@@ -227,5 +261,76 @@ def run_once(dry_run=False):
     print(f"[roam] pass done. proactive messages: {total_sent}.", file=sys.stderr)
 
 
+def _reflect_leagues():
+    """Leagues ronin reflects on: its home league(s) + whatever its users follow."""
+    leagues = list(REFLECT_LEAGUES)
+    for _uid, u in memory.active_users():
+        lg = (u.get("league") or "").lower()
+        if lg and lg not in leagues:
+            leagues.append(lg)
+    return leagues[:3]  # bound cost
+
+
+def reflect(dry_run=False):
+    """Form/revise ronin's team allegiances from real standings + its own takes.
+    A slower cadence than run_once — this builds the personality, not the alerts."""
+    leagues = _reflect_leagues()
+    world = []
+    for lg in leagues:
+        try:
+            standings = espn.standings(lg)
+            champ = espn.champion(lg)
+        except Exception as e:  # noqa: BLE001
+            print(f"[reflect] data fetch failed for {lg}: {e}", file=sys.stderr)
+            continue
+        world.append(f"### {lg.upper()}\nStandings:\n{standings[:1400]}\n\nChampion: {champ[:400]}")
+    if not world:
+        print("[reflect] no league data; skipping.", file=sys.stderr)
+        return
+    takes = [f"- {t['subject']}: {t['stance']}" for t in memory.get_takes()][:12]
+    aff = [f"- {a['team']} ({a['league']}): {a['score']:+.2f} — {a['stance']}"
+           for a in memory.get_affinities()]
+    context = (
+        "REAL DATA (ground truth):\n" + "\n\n".join(world)
+        + "\n\nYOUR CURRENT TAKES:\n" + ("\n".join(takes) or "(none yet)")
+        + "\n\nYOUR CURRENT ALLEGIANCES:\n" + ("\n".join(aff) or "(none yet — form some)")
+    )
+    system_prompt = _load_persona() + "\n" + REFLECT_ADDENDUM
+    cmd = [
+        GRAFF, "-p", "--yolo", "--model", MODEL,
+        "--append-system-prompt", system_prompt,
+        "--max-tool-calls", "0", "--no-telemetry",
+        "Reflect on who you root for and against:\n" + context,
+    ]
+    try:
+        out = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True, timeout=TURN_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        print("[reflect] timed out", file=sys.stderr)
+        return
+    if out.returncode != 0:
+        print(f"[reflect] graff error: {(out.stderr or '').strip()[-200:]}", file=sys.stderr)
+        return
+    data = _extract_json(out.stdout)
+    if not data or not isinstance(data.get("affinities"), list):
+        print("[reflect] no valid affinities returned.", file=sys.stderr)
+        return
+    n = 0
+    for a in data["affinities"]:
+        if not isinstance(a, dict) or not a.get("abbrev"):
+            continue
+        print(f"[reflect] {a.get('team')} ({a.get('league')}): "
+              f"{a.get('score')} — {a.get('stance')}", file=sys.stderr)
+        if not dry_run:
+            memory.upsert_affinity(
+                a.get("team", ""), a.get("league", ""), a.get("abbrev", ""),
+                a.get("score", 0), a.get("stance", ""),
+            )
+        n += 1
+    print(f"[reflect] updated {n} allegiance(s).", file=sys.stderr)
+
+
 if __name__ == "__main__":
-    run_once(dry_run="--dry" in sys.argv)
+    if "--reflect" in sys.argv:
+        reflect(dry_run="--dry" in sys.argv)
+    else:
+        run_once(dry_run="--dry" in sys.argv)

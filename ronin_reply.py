@@ -53,6 +53,15 @@ def _load_system_prompt(sender_id=None):
         for t in takes:
             lines.append(f"- **{t['subject']}** (conf {t.get('confidence', '?')}): {t['stance']}")
         persona += "\n" + "\n".join(lines) + "\n"
+    # Its allegiances: the teams ronin roots for / against (formed by the reflection pass).
+    loves, dislikes = memory.top_affinities()
+    if loves or dislikes:
+        lines = ["\n## Your allegiances right now (root for these, argue for them)"]
+        for a in loves:
+            lines.append(f"- ❤️ **{a['team']}** ({a['league'].upper()}): {a['stance']}")
+        for a in dislikes:
+            lines.append(f"- 💢 **{a['team']}** ({a['league'].upper()}): {a['stance']}")
+        persona += "\n" + "\n".join(lines) + "\n"
     # You: relationship memory so ronin talks like it knows this person.
     if sender_id is not None:
         u = memory.get_user(sender_id)
