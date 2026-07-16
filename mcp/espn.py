@@ -37,6 +37,29 @@ import urllib.error
 
 UA = "ronin/0.0 (graff MCP; +https://github.com/)"  # ESPN blocks empty UAs
 
+# ESPN timestamps are UTC but its schedules read in US Eastern (a UTC-date game can be
+# the prior ET calendar day), so weekday must be computed in ET or it's off by a day.
+# zoneinfo is stdlib; the container installs `tzdata` for the data. Degrade to no
+# weekday (never crash) if the tz database is missing.
+try:
+    from zoneinfo import ZoneInfo
+    _ET = ZoneInfo("America/New_York")
+except Exception:  # noqa: BLE001 — no tzdata: fall back to blank weekday
+    _ET = None
+
+
+def _weekday(iso_utc):
+    """Weekday abbrev ('Wed') in US Eastern for an ESPN UTC timestamp; '' if unavailable."""
+    if not _ET or not iso_utc:
+        return ""
+    try:
+        dt = datetime.datetime.fromisoformat(iso_utc.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=datetime.timezone.utc)
+        return dt.astimezone(_ET).strftime("%a")
+    except (ValueError, TypeError):
+        return ""
+
 # league key -> (sport, espn-league-path, human label)
 # Soccer keys share the same URL shape (sport="soccer", path=ESPN competition slug),
 # but soccer needs points-based tables and cup-final title detection — see the
@@ -181,7 +204,9 @@ def scoreboard(league, date=None):
             a = f"{away[0]} {away[2]}".strip()
             h = f"{home[0]} {home[2]}".strip()
             if status.get("state") == "pre":
-                lines.append(f"{a} @ {h} — {detail}")
+                wd = _weekday(ev.get("date"))  # ESPN's detail omits the day; add it (ET)
+                det = f"{wd} {detail}".strip() if wd else detail
+                lines.append(f"{a} @ {h} — {det}")
             else:
                 lines.append(f"{a} {away[1]} @ {h} {home[1]} — {detail}")
         else:

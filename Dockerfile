@@ -6,7 +6,9 @@ FROM python:3.12-slim
 # Fly's default builders are amd64 -> x86_64.
 ARG GRAFF_VERSION=v0.0.187
 ARG GRAFF_ARCH=x86_64
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl \
+# tzdata: gives zoneinfo its database so espn.py can label game days in US Eastern
+# (ESPN timestamps are UTC; a UTC-date game can fall on the prior ET calendar day).
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl tzdata \
     && rm -rf /var/lib/apt/lists/* \
     && curl -fsSL "https://github.com/justrach/codegraff/releases/download/${GRAFF_VERSION}/graff-${GRAFF_ARCH}-linux.tar.gz" \
        -o /tmp/graff.tgz \
