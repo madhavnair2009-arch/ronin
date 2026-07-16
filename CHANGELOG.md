@@ -11,6 +11,31 @@ This stretch took ronin from a multi-sport lookup bot to the design doc's "full
 version": persistent memory, an autonomous roam loop, proactive outreach, and a
 personality that forms its own team allegiances — plus a security incident and fix.
 
+### Soccer: World Cup + club football (2026-07-15)
+Added soccer to the ESPN server (`mcp/espn.py`) — national **and** club, since the
+2026 World Cup is on now.
+- **8 new leagues**, same URL shape (`sport=soccer`): `wc` (FIFA World Cup — national),
+  `epl`, `laliga`, `seriea`, `bundesliga`, `ligue1`, `ucl` (Champions League), `mls`.
+  Listed after the US leagues so `find_team` still resolves US teams first. Aliases:
+  bare "soccer"→World Cup (it's on), "premier league"→epl, "champions league"→ucl, etc.
+  ("football" stays NFL — this is a US-sports bot.)
+- **Points-based tables** (`_soccer_block` / `_stat_map`): soccer needed its own standings
+  path — order by ESPN `rank`, show `P  W-D-L  GD±  Pts`, with a ✓ on teams that advanced
+  (World Cup group stage). US W/L pct sort untouched.
+- **Cup-final title detection** (`_cup_finals` / `_cup_champion`): `sports_champion` now
+  covers soccer. Cups (World Cup, UCL) resolve the title from the **Final** match
+  (`season.slug == "final"` → winner + penalty/score note). ESPN caps the scoreboard at
+  ~100 events from the *start* of a range, so a whole-season window misses a late final —
+  fixed by scanning **backward from the end in ~monthly chunks** (finds it in 1–2 calls;
+  an in-progress cup finds none → "not decided, {stage} stage"). Top-5 European leagues
+  report the table leader; MLS gives an honest "decided by MLS Cup playoffs" note.
+- **Verified live:** UCL → "🏆 PSG won… beat Arsenal 1-1… 4-3 on penalties"; World Cup →
+  "not decided — Semifinals"; group tables, team/news lookups all work. US leagues
+  regression-free.
+- **Deploy note:** the autonomous `reflect()` allegiance loop reads `ROAM_REFLECT_LEAGUES`
+  (defaults `nba`) — set it to include soccer (e.g. `wc,ucl`) on Fly for ronin to form
+  World Cup allegiances on its own. Chat/lookup already works with no env change.
+
 ### Earned team allegiances (2026-07-15)
 ronin now roots **for and against** teams — earned from data, not hardcoded.
 - **`affinity` memory axis** (`memory.py`): each team gets a score in `[-1, 1]` + a

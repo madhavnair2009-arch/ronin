@@ -9,8 +9,11 @@ opinions.)
 
 Every league ESPN carries lives at the same URL shape:
     https://site.api.espn.com/apis/site/v2/sports/{sport}/{league}/...
-so one generic server covers NBA / NFL / MLB / NHL / college. Each tool takes a
-`league` argument.
+so one generic server covers NBA / NFL / MLB / NHL / college plus soccer —
+national (World Cup) and club (Premier League, La Liga, Serie A, Bundesliga,
+Ligue 1, Champions League, MLS). Each tool takes a `league` argument. Soccer
+differs in two spots: points-based tables (W-D-L + goal difference) and titles
+decided by a cup Final (World Cup, UCL) rather than a US-style series.
 
 Tools:
   sports_scoreboard(league, date?)         games + live/final scores for a day
@@ -35,6 +38,9 @@ import urllib.error
 UA = "ronin/0.0 (graff MCP; +https://github.com/)"  # ESPN blocks empty UAs
 
 # league key -> (sport, espn-league-path, human label)
+# Soccer keys share the same URL shape (sport="soccer", path=ESPN competition slug),
+# but soccer needs points-based tables and cup-final title detection — see the
+# SOCCER / SOCCER_CUPS sets below, which drive those branches.
 LEAGUES = {
     "nba":   ("basketball", "nba", "NBA"),
     "wnba":  ("basketball", "wnba", "WNBA"),
@@ -43,7 +49,26 @@ LEAGUES = {
     "nhl":   ("hockey", "nhl", "NHL"),
     "ncaaf": ("football", "college-football", "College Football"),
     "ncaam": ("basketball", "mens-college-basketball", "Men's College Basketball"),
+    # soccer — national + club. Listed after the US leagues so team resolution
+    # (find_team) prefers a US match before scanning soccer.
+    "wc":         ("soccer", "fifa.world", "World Cup"),
+    "epl":        ("soccer", "eng.1", "Premier League"),
+    "laliga":     ("soccer", "esp.1", "La Liga"),
+    "seriea":     ("soccer", "ita.1", "Serie A"),
+    "bundesliga": ("soccer", "ger.1", "Bundesliga"),
+    "ligue1":     ("soccer", "fra.1", "Ligue 1"),
+    "ucl":        ("soccer", "uefa.champions", "Champions League"),
+    "mls":        ("soccer", "usa.1", "MLS"),
 }
+
+# soccer keys (points tables, W-D-L, goal difference) vs the US W/L model
+SOCCER = {k for k, v in LEAGUES.items() if v[0] == "soccer"}
+# knockout cups — titles decided by a Final match, not a league table
+SOCCER_CUPS = {"wc", "ucl"}
+# single-table leagues where the title = top of the final table (top-5 Europe).
+# MLS is soccer but its title is the MLS Cup playoffs, so it's excluded here and
+# handled with an honest note in _soccer_champion.
+SOCCER_TABLE_TITLES = SOCCER - SOCCER_CUPS - {"mls"}
 
 # forgiving input -> canonical league key
 ALIASES = {
@@ -55,6 +80,16 @@ ALIASES = {
     "college basketball": "ncaam", "cbb": "ncaam", "ncaab": "ncaam",
     "mens college basketball": "ncaam",
     "women's basketball": "wnba", "womens basketball": "wnba",
+    # soccer. "football"/"soccer" are ambiguous in a US-sports bot: "football"
+    # stays NFL (above); bare "soccer" defaults to the World Cup (it's on now).
+    "soccer": "wc", "world cup": "wc", "fifa": "wc", "the world cup": "wc",
+    "premier league": "epl", "prem": "epl", "english premier league": "epl", "epl football": "epl",
+    "la liga": "laliga", "spanish league": "laliga",
+    "serie a": "seriea", "italian league": "seriea",
+    "bundesliga football": "bundesliga", "german league": "bundesliga",
+    "ligue 1": "ligue1", "ligue un": "ligue1", "french league": "ligue1",
+    "champions league": "ucl", "champions": "ucl", "uefa champions league": "ucl", "ucl football": "ucl",
+    "major league soccer": "mls",
 }
 
 # championship config: (headline keyword, wins-to-clinch, start MMDD, end MMDD, year offset)
@@ -236,6 +271,64 @@ def _collect_groups(node, out):
         _collect_groups(child, out)
 
 
+def _stat_map(stats):
+    """{stat name -> int value} for one standings entry (soccer uses named stats)."""
+    out = {}
+    for s in stats:
+        n = s.get("name")
+        if not n:
+            continue
+        v = s.get("value")
+        try:
+            out[n] = int(float(v)) if v is not None else 0
+        except (TypeError, ValueError):
+            out[n] = 0
+    return out
+
+
+def _wl_block(gname, entries):
+    """US-sports table: rank by win pct, show W-L(-T)."""
+    parsed = []
+    for e in entries:
+        tm = e.get("team", {})
+        tname = tm.get("abbreviation") or tm.get("displayName", "?")
+        w, l, t = _wlt(e.get("stats", []))
+        pct = w / (w + l) if (w + l) else 0.0
+        parsed.append((pct, w, l, t, tname))
+    parsed.sort(key=lambda r: r[0], reverse=True)  # ESPN entries aren't pre-sorted
+    rows = []
+    for i, (_, w, l, t, tname) in enumerate(parsed, 1):
+        rec = f"{w}-{l}" + (f"-{t}" if t else "")
+        rows.append(f"{i:>2}. {tname:<4} {rec}")
+    return gname + "\n" + "\n".join(rows) if rows else ""
+
+
+def _soccer_block(gname, entries):
+    """Soccer table: order by ESPN rank, show P W-D-L, goal diff, points.
+    A ✓ marks teams already advanced (World Cup group stage)."""
+    parsed = []
+    for e in entries:
+        tm = e.get("team", {})
+        tname = tm.get("abbreviation") or tm.get("displayName", "?")
+        m = _stat_map(e.get("stats", []))
+        parsed.append((
+            m.get("rank", 0), m.get("gamesPlayed", 0), m.get("wins", 0),
+            m.get("ties", 0), m.get("losses", 0), m.get("pointDifferential", 0),
+            m.get("points", 0), m.get("advanced", 0), tname,
+        ))
+    # rank is ESPN's tiebroken order; fall back to points then goal diff if absent.
+    if all(p[0] > 0 for p in parsed):
+        parsed.sort(key=lambda r: r[0])
+    else:
+        parsed.sort(key=lambda r: (r[6], r[5]), reverse=True)
+    rows = []
+    for i, (rank, gp, w, d, l, gd, pts, adv, tname) in enumerate(parsed, 1):
+        pos = rank if rank > 0 else i
+        mark = " ✓" if adv else ""
+        rows.append(f"{pos:>2}. {tname:<4} {gp}gp {w}-{d}-{l} GD{gd:+d} {pts}pts{mark}")
+    return gname + "\n" + "\n".join(rows) if rows else ""
+
+
 def standings(league, group=None):
     key = _league(league)
     data = _get(_standings_url(key))
@@ -245,24 +338,14 @@ def standings(league, group=None):
     if not groups:  # some leagues put entries at the root
         _collect_groups(data, groups)
     filt = (group or "").strip().lower()
+    build = _soccer_block if key in SOCCER else _wl_block
     blocks = []
     for gname, entries in groups:
         if filt and filt not in gname.lower():
             continue
-        parsed = []
-        for e in entries:
-            tm = e.get("team", {})
-            tname = tm.get("abbreviation") or tm.get("displayName", "?")
-            w, l, t = _wlt(e.get("stats", []))
-            pct = w / (w + l) if (w + l) else 0.0
-            parsed.append((pct, w, l, t, tname))
-        parsed.sort(key=lambda r: r[0], reverse=True)  # ESPN entries aren't pre-sorted
-        rows = []
-        for i, (_, w, l, t, tname) in enumerate(parsed, 1):
-            rec = f"{w}-{l}" + (f"-{t}" if t else "")
-            rows.append(f"{i:>2}. {tname:<4} {rec}")
-        if rows:
-            blocks.append(gname + "\n" + "\n".join(rows))
+        block = build(gname, entries)
+        if block:
+            blocks.append(block)
     if not blocks:
         if filt:
             return f"No {_label(key)} standings group matched '{group}'."
@@ -336,8 +419,117 @@ def _finals_games(key, year, kw, win):
     return games
 
 
+def _iso_to_date(s):
+    try:
+        return datetime.date.fromisoformat(s[:10])
+    except (ValueError, TypeError):
+        return None
+
+
+def _cup_finals(key, start, end):
+    """Find the Final match(es) of a cup. ESPN caps the scoreboard at ~100 events
+    from the *start* of a date range, so a whole-season window misses a late final.
+    Scan backward from the end in ~monthly chunks — a decided final is at the last
+    stage, so it turns up in the first chunk or two; an in-progress cup finds none."""
+    lo = _iso_to_date(start)
+    hi = _iso_to_date(end)
+    if not lo or not hi:
+        return []
+    today = datetime.date.today()
+    if hi > today:  # don't scan past today (padded end dates, in-progress cups)
+        hi = today
+    step = datetime.timedelta(days=35)
+    cur = hi
+    for _ in range(18):  # safety bound; covers a ~1.5yr season in monthly hops
+        if cur < lo:
+            break
+        w_lo = max(cur - step, lo)
+        span = f"{w_lo.strftime('%Y%m%d')}-{cur.strftime('%Y%m%d')}"
+        try:
+            events = _get(f"{_base(key)}/scoreboard?dates={span}").get("events", [])
+        except urllib.error.URLError:
+            events = []
+        finals = [e for e in events if (e.get("season") or {}).get("slug") == "final"]
+        if finals:
+            return finals
+        cur = w_lo - datetime.timedelta(days=1)
+    return []
+
+
+def _cup_champion(key, disp, stage, start, end):
+    """Knockout cup (World Cup, Champions League): the title is the Final match.
+    ESPN tags the final event with season.slug == 'final'."""
+    finals = _cup_finals(key, start, end)
+    for e in sorted(finals, key=lambda x: x.get("date", ""), reverse=True):
+        comp = (e.get("competitions") or [{}])[0]
+        state = (e.get("status") or {}).get("type", {}).get("state")
+        comps = comp.get("competitors", [])
+        note = ""
+        if comp.get("notes"):
+            note = comp["notes"][0].get("headline", "")
+        if state == "post":
+            win = next((c for c in comps if c.get("winner")), None)
+            los = next((c for c in comps if not c.get("winner")), None)
+            wn = (win or {}).get("team", {}).get("displayName", "?")
+            ln = (los or {}).get("team", {}).get("displayName", "?")
+            score = f"{(win or {}).get('score','')}-{(los or {}).get('score','')}"
+            out = f"🏆 {wn} won the {disp} — beat {ln} {score} in the final."
+            return out + (f"\n{note}" if note and note.lower() not in out.lower() else "")
+        names = " vs ".join(c.get("team", {}).get("displayName", "?") for c in comps)
+        return f"{disp}: the final is set — {names} ({e.get('date','')[:10]}). Not played yet."
+    return f"The {disp} isn't decided yet — currently the {stage} stage." if stage \
+        else f"The {disp} isn't decided yet."
+
+
+def _table_champion(key, disp):
+    """Single-table league: the title is top of the table (champions once it ends)."""
+    try:
+        data = _get(_standings_url(key))
+    except urllib.error.URLError as e:
+        return f"Couldn't load {disp} standings ({e})."
+    groups = []
+    for child in data.get("children", []) or []:
+        _collect_groups(child, groups)
+    if not groups:
+        _collect_groups(data, groups)
+    best = None  # (rank, gp, pts, gd, name)
+    for _, entries in groups:
+        for e in entries:
+            m = _stat_map(e.get("stats", []))
+            tname = e.get("team", {}).get("displayName", "?")
+            cand = (m.get("rank", 0) or 999, m.get("gamesPlayed", 0),
+                    m.get("points", 0), m.get("pointDifferential", 0), tname)
+            if best is None or cand[0] < best[0]:
+                best = cand
+    if best is None:
+        return f"Couldn't load {disp} standings."
+    rank, gp, pts, gd, tname = best
+    if gp == 0:
+        return f"The {disp} season hasn't kicked off yet — no standings to call a leader from."
+    return f"{disp}: {tname} lead the table — {pts} pts, GD {gd:+d}, from {gp} games. " \
+           f"Title's theirs if they finish top."
+
+
+def _soccer_champion(key):
+    sb = _get(f"{_base(key)}/scoreboard")
+    season = (sb.get("leagues") or [{}])[0].get("season", {}) or {}
+    disp = season.get("displayName") or _label(key)
+    stage = (season.get("type") or {}).get("name", "")
+    start = season.get("startDate", "")[:10].replace("-", "")
+    end = season.get("endDate", "")[:10].replace("-", "")
+    if key in SOCCER_CUPS:
+        return _cup_champion(key, disp, stage, start, end)
+    if key in SOCCER_TABLE_TITLES:
+        return _table_champion(key, disp)
+    # MLS: decided by the MLS Cup playoffs, not the table — don't fake a champion.
+    return (f"{disp} titles are decided by the MLS Cup playoffs, not the table — "
+            f"check sports_scoreboard('mls') for the latest playoff results.")
+
+
 def champion(league):
     key = _league(league)
+    if key in SOCCER:
+        return _soccer_champion(key)
     if key not in CHAMP:
         return f"No championship lookup available for {_label(key)} yet."
     kwd, wins_needed, s_md, e_md, yoff = CHAMP[key]
@@ -425,8 +617,10 @@ def find_team(query, league=None):
 # ---------------------------------------------------------------------------
 _LEAGUE_PROP = {
     "type": "string",
-    "description": "Which league: nba, wnba, nfl, mlb, nhl, ncaaf (college football), "
-                   "or ncaam (men's college basketball).",
+    "description": "Which league. US: nba, wnba, nfl, mlb, nhl, ncaaf (college "
+                   "football), ncaam (men's college basketball). Soccer: wc "
+                   "(FIFA World Cup — national teams), epl (Premier League), laliga, "
+                   "seriea, bundesliga, ligue1, ucl (Champions League), mls.",
 }
 
 TOOLS = {
@@ -474,8 +668,10 @@ TOOLS = {
             "name": "sports_champion",
             "description": "Most recent decided championship for a league — the winner, "
                            "the series score, and game-by-game results. Covers NBA Finals, "
-                           "Super Bowl (NFL), World Series (MLB), Stanley Cup (NHL). Use for "
-                           "'who won the title/chip/ring/cup/super bowl' questions.",
+                           "Super Bowl (NFL), World Series (MLB), Stanley Cup (NHL), plus "
+                           "soccer: the World Cup (wc) and Champions League (ucl) finals, and "
+                           "the current table leader for epl/laliga/seriea/bundesliga/ligue1. "
+                           "Use for 'who won the title/cup/world cup/super bowl' questions.",
             "inputSchema": {
                 "type": "object",
                 "properties": {"league": _LEAGUE_PROP},
@@ -625,6 +821,14 @@ def selftest():
     print(team("nba", "Lakers"))
     print("\n--- team(nfl, Lions) ---")
     print(team("nfl", "Lions"))
+    for lg in ("wc", "ucl", "epl"):
+        print(f"\n########## {lg.upper()} (soccer) ##########")
+        print("--- scoreboard ---")
+        print(scoreboard(lg))
+        print("\n--- standings (first block) ---")
+        print(standings(lg).split("\n\n")[0])
+        print("\n--- champion ---")
+        print(champion(lg))
 
 
 if __name__ == "__main__":
