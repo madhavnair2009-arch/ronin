@@ -78,13 +78,27 @@ def _load_system_prompt(sender_id=None):
         for a in dislikes:
             lines.append(f"- 💢 **{a['team']}** ({a['league'].upper()}): {a['stance']}")
         persona += "\n" + "\n".join(lines) + "\n"
-    # You: relationship memory so ronin talks like it knows this person.
+    # You: relationship memory so ronin talks like it knows this person. A person can
+    # follow one team per league (e.g. 49ers in NFL AND Warriors in NBA), so list them
+    # all and let ronin pick the right one for whatever sport comes up.
     if sender_id is not None:
-        u = memory.get_user(sender_id)
-        if u and u.get("team"):
-            persona += (f"\n## Who you're talking to\nThis person follows the "
-                        f"**{u['team']}** ({u.get('league', '').upper()}). Talk like you know "
-                        f"that — reference their team, rib them about it, remember it's theirs.\n")
+        teams = memory.user_teams(sender_id)
+        if teams:
+            block = ["\n## Who you're talking to"]
+            if len(teams) == 1:
+                t = teams[0]
+                block.append(f"This person follows the **{t['team']}** ({t['league'].upper()}). "
+                             f"Talk like you know that, reference their team and rib them about it.")
+            else:
+                lst = "; ".join(f"{t['team']} ({t['league'].upper()})" for t in teams)
+                block.append(f"This person's teams, one per sport: **{lst}**. Talk like you know "
+                             f"them. When they say 'my team' or ask about a sport, use the team "
+                             f"for that sport.")
+            # Covers the exact gap they hit: asking about a sport with no team saved.
+            block.append("If they ask about a sport you have no team of theirs for, say you don't "
+                         "have their team for that one yet and ask who it is, don't act clueless "
+                         "about the teams you DO have.")
+            persona += "\n".join(block) + "\n"
     return persona
 
 

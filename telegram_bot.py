@@ -53,10 +53,12 @@ if not TOKEN:
 API = f"https://api.telegram.org/bot{TOKEN}"
 
 GREETING = (
-    "yo — I'm ronin. NBA, WNBA, NFL, MLB, NHL, college. ask me for scores, standings, "
-    "news, or just argue with me about a team. I pull real numbers, the takes are my own.\n\n"
-    "tell me your team with /team (e.g. `/team pistons` or `/team nhl rangers`) and I'll "
-    "text you when something actually happens with them. /mute to stop, /unmute to resume."
+    "yo, I'm ronin. NBA, WNBA, NFL, MLB, NHL, college, and soccer (world cup + club). ask "
+    "me for scores, standings, news, or just argue with me about a team. I pull real "
+    "numbers, the takes are my own.\n\n"
+    "tell me your teams with /team (e.g. `/team 49ers` or `/team nba warriors`), one per "
+    "sport so you can stack them. /teams to see them, `/team clear <sport>` to drop one. "
+    "/mute to stop pings, /unmute to resume."
 )
 
 # Roam loop (proactive outreach) config — an in-process scheduler so the bot host also
@@ -80,10 +82,33 @@ def _handle_command(chat_id, sender, text):
         memory.set_muted(sender, False)
         send(chat_id, "back on — I'll ping you when your team does something.")
         return True
+    if cmd == "/teams":  # show what I've got you down for
+        mine = memory.user_teams(sender)
+        if not mine:
+            send(chat_id, "haven't got a team for you yet. `/team 49ers` or `/team nba warriors`.")
+        else:
+            lst = ", ".join(f"{t['team']} ({t['league'].upper()})" for t in mine)
+            send(chat_id, f"i've got you down for: {lst}. add more with /team, drop one with "
+                          f"`/team clear <sport>`.")
+        return True
     if cmd == "/team":
         args = parts[1:]
         if not args:
-            send(chat_id, "tell me who — like `/team pistons` or `/team nhl rangers`.")
+            send(chat_id, "tell me who, like `/team 49ers` or `/team nba warriors`. you can "
+                          "keep one team per sport. /teams to see what i've got.")
+            return True
+        # `/team clear` drops one sport's team (or all), so stale teams can be pruned.
+        if args[0].lower() == "clear":
+            rest = args[1:]
+            lg = rest[0].lower() if rest else None
+            if lg is not None and lg not in espn.LEAGUES and lg not in espn.ALIASES:
+                send(chat_id, f"'{rest[0]}' isn't a sport i know. try like `/team clear nfl`, "
+                              f"or just `/team clear` to wipe them all.")
+                return True
+            lg = espn.ALIASES.get(lg, lg) if lg else None
+            left = memory.clear_team(sender, lg)
+            send(chat_id, ("cleared them all." if lg is None else f"dropped your {lg.upper()} team.")
+                          + (f" still holding {left}." if left else " no teams left."))
             return True
         league = None
         if args[0].lower() in espn.LEAGUES or args[0].lower() in espn.ALIASES:
@@ -96,8 +121,10 @@ def _handle_command(chat_id, sender, text):
             return True
         memory.set_team(sender, lg, t.get("displayName", query),
                         t.get("abbreviation", ""), chat_id=chat_id)
-        send(chat_id, f"got it — you're a {t.get('displayName', query)} guy. "
-                      f"I'll text you when something real happens with them. 🫡"[:300])
+        others = [x for x in memory.user_teams(sender) if x["league"] != lg]
+        extra = (" (still got your " + ", ".join(x["team"] for x in others) + " too)") if others else ""
+        send(chat_id, f"got it, you're a {t.get('displayName', query)} ({lg.upper()}) guy.{extra} "
+                      f"I'll text you when something real happens. 🫡"[:300])
         return True
     return False
 
@@ -170,7 +197,20 @@ def typing(chat_id):
         pass
 
 
-def handle(update):
+def _reply_async(chat_id, sender, text):
+    """The slow part (the model turn) — runs in its own thread so one user's long reply
+    doesn't block anyone else."""
+    print(f"[msg] {sender}: {text}", file=sys.stderr)
+    typing(chat_id)
+    answer = ronin_reply.reply(sender, text)
+    send(chat_id, answer)
+    print(f"[reply] {sender}: {answer[:80]}...", file=sys.stderr)
+
+
+def dispatch(update):
+    """Fast path runs synchronously in the poll loop; only the model reply is threaded.
+    Handling commands synchronously means a /team write commits before the next message's
+    reply thread reads memory, so a '/team' + immediate question can't race."""
     msg = update.get("message") or update.get("edited_message")
     if not msg:
         return
@@ -180,19 +220,14 @@ def handle(update):
     # Relationship memory: remember this person exists + how to reach them (for roam).
     memory.touch_user(sender, chat_id)
     if not text:
-        send(chat_id, "I only do text for now — type me something.")
+        send(chat_id, "I only do text for now, type me something.")
         return
-    if text.startswith("/"):
-        if _handle_command(chat_id, sender, text):
-            return
+    if text.startswith("/") and _handle_command(chat_id, sender, text):
+        return
     if not _rate_ok(sender):
-        send(chat_id, "easy — you've hit me a lot this hour. give it a bit and come back.")
+        send(chat_id, "easy, you've hit me a lot this hour. give it a bit and come back.")
         return
-    print(f"[msg] {sender}: {text}", file=sys.stderr)
-    typing(chat_id)
-    answer = ronin_reply.reply(sender, text)
-    send(chat_id, answer)
-    print(f"[reply] {sender}: {answer[:80]}...", file=sys.stderr)
+    threading.Thread(target=_reply_async, args=(chat_id, sender, text), daemon=True).start()
 
 
 def main():
@@ -212,8 +247,8 @@ def main():
             continue
         for upd in resp.get("result", []):
             offset = upd["update_id"] + 1
-            # one thread per message so a slow graff turn doesn't block others
-            threading.Thread(target=handle, args=(upd,), daemon=True).start()
+            # sync fast path (commands/memory) + threaded model reply — see dispatch()
+            dispatch(upd)
 
 
 def _shutdown(signum, _frame):

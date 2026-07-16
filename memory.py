@@ -110,18 +110,59 @@ def touch_user(uid, chat_id):
     _update("relationships.json", go, {})
 
 
+def _normalize_teams(u):
+    """A user's teams as {league: {team, abbrev}}, migrating the old single-team
+    shape (top-level league/team/abbrev) if that's all a record carries."""
+    teams = dict(u.get("teams") or {})
+    legacy_lg = u.get("league")
+    if legacy_lg and legacy_lg not in teams and u.get("team"):
+        teams[legacy_lg] = {"team": u["team"], "abbrev": u.get("abbrev", "")}
+    return teams
+
+
 def set_team(uid, league, team_display, abbrev, chat_id=None):
+    """Add/replace this user's team for one league. Teams in other leagues are kept,
+    so a person can follow the 49ers (NFL) and the Warriors (NBA) at once."""
     uid = str(uid)
 
     def go(d):
         u = d.setdefault(uid, {})
-        u["league"] = league
-        u["team"] = team_display
-        u["abbrev"] = abbrev
+        teams = _normalize_teams(u)
+        teams[league] = {"team": team_display, "abbrev": abbrev}
+        u["teams"] = teams
+        for k in ("league", "team", "abbrev"):  # fold away legacy single-team fields
+            u.pop(k, None)
         u["muted"] = False
         if chat_id is not None:
             u["chat_id"] = chat_id
     _update("relationships.json", go, {})
+
+
+def clear_team(uid, league=None):
+    """Drop one league's team, or all teams if league is None. Returns how many remain."""
+    uid = str(uid)
+
+    def go(d):
+        u = d.get(uid)
+        if not u:
+            return 0
+        teams = _normalize_teams(u)
+        if league is None:
+            teams = {}
+        else:
+            teams.pop(league, None)
+        u["teams"] = teams
+        for k in ("league", "team", "abbrev"):
+            u.pop(k, None)
+        return len(teams)
+    return _update("relationships.json", go, {})
+
+
+def user_teams(uid_or_record):
+    """List of {league, team, abbrev} for a user. Accepts a uid or a record dict."""
+    u = uid_or_record if isinstance(uid_or_record, dict) else (get_user(uid_or_record) or {})
+    return [{"league": lg, "team": info.get("team", ""), "abbrev": info.get("abbrev", "")}
+            for lg, info in _normalize_teams(u).items()]
 
 
 def set_muted(uid, muted):
@@ -137,7 +178,7 @@ def active_users():
     """Users eligible for proactive outreach: team set, not muted, reachable."""
     out = []
     for uid, u in _read("relationships.json", {}).items():
-        if u.get("team") and u.get("chat_id") and not u.get("muted"):
+        if _normalize_teams(u) and u.get("chat_id") and not u.get("muted"):
             out.append((uid, u))
     return out
 

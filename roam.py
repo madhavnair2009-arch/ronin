@@ -163,15 +163,14 @@ def _extract_json(text):
     return None
 
 
-def _judge(uid, user, headline):
+def _judge(uid, team, league, headline):
     """One graff call: decide notability + compose message + revise take. Returns dict or None."""
-    team = user["team"]
     prior = _existing_take(team)
     prior_str = "none"
     if prior:
         prior_str = f"{prior['subject']} — {prior['stance']} (confidence {prior.get('confidence')})"
     context = {
-        "person_follows": f"{team} ({user.get('league', '').upper()})",
+        "person_follows": f"{team} ({league.upper()})",
         "new_news_item": f"{headline['headline']} — {headline['desc']}".strip(" —"),
         "your_current_take_on_this_storyline": prior_str,
         "things_you_recently_told_them": _recent_texts(uid) or ["(nothing yet)"],
@@ -215,51 +214,57 @@ def run_once(dry_run=False):
         return
     total_sent = 0
     for uid, user in users:
-        league, team = user["league"], user["team"]
-        scope = f"{league}:{team.lower()}"
-        try:
-            heads = espn.recent_headlines(league, team, limit=HEADLINES_PER_TEAM)
-        except Exception as e:  # noqa: BLE001 — one bad team shouldn't stop the pass
-            print(f"[roam] news fetch failed for {team}: {e}", file=sys.stderr)
-            continue
-
-        # Cold start: baseline the cursor silently, never blast old news.
-        if memory.cursor_is_cold(scope):
-            memory.mark_seen(scope, [h["key"] for h in heads])
-            print(f"[roam] baselined {scope} ({len(heads)} headlines, no messages).", file=sys.stderr)
-            continue
-
-        new_heads = [h for h in heads if not memory.headline_seen(scope, h["key"])]
-        if not new_heads:
-            continue
-        # Mark them all seen up front so a crash mid-pass won't re-blast them.
-        memory.mark_seen(scope, [h["key"] for h in new_heads])
-
-        sent_this_user = 0
-        for h in new_heads:
-            if memory.already_sent(uid, h["key"]):
+        chat_id = user.get("chat_id")
+        sent_this_user = 0  # cap is per person, across all their teams
+        for tinfo in memory.user_teams(user):
+            league, team = tinfo["league"], tinfo["team"]
+            if not (league and team):
                 continue
-            decision = _judge(uid, user, h)
-            if not decision:
+            scope = f"{league}:{team.lower()}"
+            try:
+                heads = espn.recent_headlines(league, team, limit=HEADLINES_PER_TEAM)
+            except Exception as e:  # noqa: BLE001 — one bad team shouldn't stop the pass
+                print(f"[roam] news fetch failed for {team}: {e}", file=sys.stderr)
                 continue
-            take = decision.get("take")
-            if isinstance(take, dict) and take.get("subject"):
-                memory.upsert_take(
-                    take["subject"], take.get("stance", ""), take.get("confidence", 0.5),
-                    take.get("reasoning", ""), evidence=[h["key"]],
-                )
-            msg = (decision.get("message") or "").strip()
-            if decision.get("notable") and msg and sent_this_user < MAX_PER_USER:
-                if not memory.proactive_allowed(uid, PROACTIVE_MIN_GAP):
-                    print(f"[roam] {uid} throttled (min gap); take saved, no ping.", file=sys.stderr)
+
+            # Cold start: baseline the cursor silently, never blast old news.
+            if memory.cursor_is_cold(scope):
+                memory.mark_seen(scope, [h["key"] for h in heads])
+                print(f"[roam] baselined {scope} ({len(heads)} headlines, no messages).",
+                      file=sys.stderr)
+                continue
+
+            new_heads = [h for h in heads if not memory.headline_seen(scope, h["key"])]
+            if not new_heads:
+                continue
+            # Mark them all seen up front so a crash mid-pass won't re-blast them.
+            memory.mark_seen(scope, [h["key"] for h in new_heads])
+
+            for h in new_heads:
+                if memory.already_sent(uid, h["key"]):
                     continue
-                print(f"[roam] -> {team} to {uid}: {msg}", file=sys.stderr)
-                if not dry_run:
-                    _tg_send(user["chat_id"], msg)
-                memory.log_sent(uid, h["key"], msg)
-                memory.touch_proactive(uid)
-                sent_this_user += 1
-                total_sent += 1
+                decision = _judge(uid, team, league, h)
+                if not decision:
+                    continue
+                take = decision.get("take")
+                if isinstance(take, dict) and take.get("subject"):
+                    memory.upsert_take(
+                        take["subject"], take.get("stance", ""), take.get("confidence", 0.5),
+                        take.get("reasoning", ""), evidence=[h["key"]],
+                    )
+                msg = (decision.get("message") or "").strip()
+                if decision.get("notable") and msg and sent_this_user < MAX_PER_USER:
+                    if not memory.proactive_allowed(uid, PROACTIVE_MIN_GAP):
+                        print(f"[roam] {uid} throttled (min gap); take saved, no ping.",
+                              file=sys.stderr)
+                        continue
+                    print(f"[roam] -> {team} to {uid}: {msg}", file=sys.stderr)
+                    if not dry_run:
+                        _tg_send(chat_id, msg)
+                    memory.log_sent(uid, h["key"], msg)
+                    memory.touch_proactive(uid)
+                    sent_this_user += 1
+                    total_sent += 1
     print(f"[roam] pass done. proactive messages: {total_sent}.", file=sys.stderr)
 
 
@@ -267,9 +272,10 @@ def _reflect_leagues():
     """Leagues ronin reflects on: its home league(s) + whatever its users follow."""
     leagues = list(REFLECT_LEAGUES)
     for _uid, u in memory.active_users():
-        lg = (u.get("league") or "").lower()
-        if lg and lg not in leagues:
-            leagues.append(lg)
+        for t in memory.user_teams(u):
+            lg = (t["league"] or "").lower()
+            if lg and lg not in leagues:
+                leagues.append(lg)
     return leagues[:3]  # bound cost
 
 
