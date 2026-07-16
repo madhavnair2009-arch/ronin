@@ -151,7 +151,9 @@ def scoreboard(league, date=None):
     if date:
         url += f"?dates={date}"
     data = _get(url)
-    events = data.get("events", [])
+    # Sort by kickoff so the first line is always the earliest game — "what's the
+    # first/next game" must not depend on ESPN's (usually-but-not-guaranteed) order.
+    events = sorted(data.get("events", []), key=lambda e: e.get("date", ""))
     lbl = _label(key)
     if not events:
         return f"No {lbl} games found for {date or 'today'}."
@@ -683,8 +685,11 @@ TOOLS = {
         "fn": lambda a: scoreboard(a.get("league", ""), a.get("date")),
         "schema": {
             "name": "sports_scoreboard",
-            "description": "Games and live/final scores for a day in any league. "
-                           "Ground-truth from ESPN. Date optional (default today).",
+            "description": "Games and live/final scores for a day in any league, returned "
+                           "earliest-kickoff first (so the first line is the first game that "
+                           "day). Ground-truth from ESPN. Date optional (default today). For "
+                           "'first/next/opening game' questions, read the earliest game here "
+                           "rather than guessing the date.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
