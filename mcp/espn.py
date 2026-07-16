@@ -690,7 +690,9 @@ TOOLS = {
                 "properties": {
                     "league": _LEAGUE_PROP,
                     "date": {"type": "string",
-                             "description": "Day as YYYYMMDD (e.g. 20260315). Omit for today."},
+                             "description": "Any day as YYYYMMDD (e.g. 20260315), past or "
+                                            "future, not just today. Omit for today. Use this "
+                                            "for 'tomorrow', 'this weekend', a specific date."},
                 },
                 "required": ["league"],
             },

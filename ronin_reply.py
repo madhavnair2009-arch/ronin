@@ -13,6 +13,7 @@ CLI (for local testing, no transport):
     python3 ronin_reply.py <sender_id> "your message"
 """
 
+import datetime
 import os
 import re
 import subprocess
@@ -46,6 +47,21 @@ TURN_TIMEOUT = int(os.environ.get("RONIN_TURN_TIMEOUT", "120"))
 def _load_system_prompt(sender_id=None):
     with open(os.path.join(ROOT, "persona.md"), encoding="utf-8") as f:
         persona = f.read()
+    # Ground the model in the real date. Without this it has no idea what "today" is,
+    # so it can't turn "tomorrow"/"this weekend"/"friday" into a YYYYMMDD to look up,
+    # and falls back to "I can only see today's games."
+    today = datetime.date.today()
+    tmrw = today + datetime.timedelta(days=1)
+    dateline = (
+        "## Right now (real-world date, use it)\n"
+        f"Today is {today:%A, %B %-d, %Y} ({today:%Y%m%d}). "
+        f"Tomorrow is {tmrw:%A} ({tmrw:%Y%m%d}).\n"
+        "Use this for any 'today / tonight / tomorrow / this weekend / a weekday' question. "
+        "sports_scoreboard takes a date as YYYYMMDD and works for ANY day, past or future, "
+        "not just today. Work out the date they mean and pass it. Never tell someone you can "
+        "only see today's slate, you can pull whatever day they asked for.\n\n"
+    )
+    persona = dateline + persona
     # Its beliefs: the LIVING takes the roam loop revises (not the frozen seed file).
     takes = memory.get_takes()
     if takes:
@@ -106,7 +122,7 @@ def reply(sender_id, message):
             env=_child_env(),
         )
     except subprocess.TimeoutExpired:
-        return "took too long on that one — hit me again in a sec."
+        return "took too long on that one, hit me again in a sec."
     if out.returncode != 0:
         err = (out.stderr or "").strip().splitlines()
         detail = err[-1] if err else f"exit {out.returncode}"
