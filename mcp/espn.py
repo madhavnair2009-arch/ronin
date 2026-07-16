@@ -685,11 +685,13 @@ TOOLS = {
         "fn": lambda a: scoreboard(a.get("league", ""), a.get("date")),
         "schema": {
             "name": "sports_scoreboard",
-            "description": "Games and live/final scores for a day in any league, returned "
-                           "earliest-kickoff first (so the first line is the first game that "
-                           "day). Ground-truth from ESPN. Date optional (default today). For "
-                           "'first/next/opening game' questions, read the earliest game here "
-                           "rather than guessing the date.",
+            "description": "Games and live/final scores for a league, returned earliest-"
+                           "kickoff first (first line = first game). Ground-truth from ESPN. "
+                           "OMIT the date to get the next upcoming games in order — do this "
+                           "for any 'first/opening/next game', 'season opener', or 'when do "
+                           "they play next' question and take the first line. Only pass a date "
+                           "when the user names a specific day; never pass a date you guessed "
+                           "(openers aren't always on the usual day, you'll get the wrong game).",
             "inputSchema": {
                 "type": "object",
                 "properties": {
