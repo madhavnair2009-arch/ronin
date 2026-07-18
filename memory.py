@@ -338,13 +338,24 @@ def upsert_affinity(team, league, abbrev, score, stance, reasons=None, evidence=
         _write("affinity.json", cur)
 
 
-def top_affinities(n=3, threshold=0.15):
-    """Return (loves, dislikes): the strongest positive and negative allegiances."""
+def top_affinities(n=3, threshold=0.15, max_out=4):
+    """Return (loves, dislikes): the strongest positive and negative allegiances, with
+    each league's top pick guaranteed a slot so a timely allegiance (e.g. a World Cup
+    team) isn't buried behind a deeper-stocked league. Bounded by max_out."""
     aff = [a for a in get_affinities() if isinstance(a, dict)]
-    loves = sorted([a for a in aff if a.get("score", 0) >= threshold],
-                   key=lambda a: a["score"], reverse=True)[:n]
-    dislikes = sorted([a for a in aff if a.get("score", 0) <= -threshold],
-                      key=lambda a: a["score"])[:n]
+
+    def select(cands, reverse):
+        cands = sorted(cands, key=lambda a: a["score"], reverse=reverse)
+        out = list(cands[:n])                          # strongest overall
+        seen = {a.get("league") for a in out}
+        for a in cands:                                # then each league's top pick
+            if a.get("league") not in seen:
+                out.append(a)
+                seen.add(a.get("league"))
+        return sorted(out, key=lambda a: a["score"], reverse=reverse)[:max_out]
+
+    loves = select([a for a in aff if a.get("score", 0) >= threshold], True)
+    dislikes = select([a for a in aff if a.get("score", 0) <= -threshold], False)
     return loves, dislikes
 
 
