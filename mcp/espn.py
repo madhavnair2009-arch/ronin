@@ -462,9 +462,12 @@ def _cup_finals(key, start, end):
     hi = _iso_to_date(end)
     if not lo or not hi:
         return []
-    today = datetime.date.today()
-    if hi > today:  # don't scan past today (padded end dates, in-progress cups)
-        hi = today
+    # Cap the scan near the present so we don't walk a padded end date (often Dec 31)
+    # backwards for months — but reach a little into the future so a final scheduled in
+    # the next few weeks (e.g. this weekend) is still found.
+    horizon = datetime.date.today() + datetime.timedelta(days=30)
+    if hi > horizon:
+        hi = horizon
     step = datetime.timedelta(days=35)
     cur = hi
     for _ in range(18):  # safety bound; covers a ~1.5yr season in monthly hops
@@ -503,7 +506,7 @@ def _cup_champion(key, disp, stage, start, end):
             out = f"🏆 {wn} won the {disp} — beat {ln} {score} in the final."
             return out + (f"\n{note}" if note and note.lower() not in out.lower() else "")
         names = " vs ".join(c.get("team", {}).get("displayName", "?") for c in comps)
-        return f"{disp}: the final is set — {names} ({e.get('date','')[:10]}). Not played yet."
+        return f"{disp}: the final is set, {names} ({e.get('date','')[:10]}). Not played yet."
     return f"The {disp} isn't decided yet — currently the {stage} stage." if stage \
         else f"The {disp} isn't decided yet."
 

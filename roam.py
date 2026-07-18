@@ -21,6 +21,7 @@ Run:
   python3 roam.py --dry      one pass, judge + revise takes but DON'T send
 """
 
+import datetime
 import json
 import os
 import re
@@ -288,10 +289,23 @@ def reflect(dry_run=False):
         try:
             standings = espn.standings(lg)
             champ = espn.champion(lg)
+            recent = ""
+            # A cup's group tables go stale the moment the knockouts start, so feed the
+            # actual recent + upcoming results (who won, who's out, who's in the final) —
+            # otherwise allegiances form on group-stage form and miss a semifinal upset.
+            if lg in getattr(espn, "SOCCER_CUPS", set()):
+                today = datetime.date.today()
+                lo = (today - datetime.timedelta(days=12)).strftime("%Y%m%d")
+                hi = (today + datetime.timedelta(days=5)).strftime("%Y%m%d")
+                recent = espn.scoreboard(lg, f"{lo}-{hi}")
         except Exception as e:  # noqa: BLE001
             print(f"[reflect] data fetch failed for {lg}: {e}", file=sys.stderr)
             continue
-        world.append(f"### {lg.upper()}\nStandings:\n{standings[:1400]}\n\nChampion: {champ[:400]}")
+        block = f"### {lg.upper()}\n"
+        if recent:
+            block += f"Recent + upcoming results (ground truth, weigh these most):\n{recent[:1200]}\n\n"
+        block += f"Standings:\n{standings[:1000]}\n\nChampion: {champ[:400]}"
+        world.append(block)
     if not world:
         print("[reflect] no league data; skipping.", file=sys.stderr)
         return
