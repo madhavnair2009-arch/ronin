@@ -16,6 +16,9 @@ primary_region = "iad"
   RONIN_STATE_DIR = "/data"
   ROAM_ENABLED = "1"
   ROAM_INTERVAL = "1800"
+  # Leagues ronin reflects on to form its own allegiances (home base + the World Cup,
+  # on for the tournament). Capped at 3; user-followed leagues get folded in too.
+  ROAM_REFLECT_LEAGUES = "nba,wc"
 
 # Durable state volume (create once: `fly volumes create ronin_state --size 1 -r iad`).
 [mounts]
