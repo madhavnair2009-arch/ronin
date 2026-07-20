@@ -22,6 +22,7 @@ import datetime
 import os
 import sys
 import tempfile
+import time
 
 # Isolate memory state in a temp dir BEFORE importing anything that reads STATE_DIR.
 _TMP_STATE = tempfile.mkdtemp(prefix="ronin_eval_state_")
@@ -165,6 +166,72 @@ def run_data(res):
     res.check("data", "top_affinities surfaces the WC pick despite 3 stronger NBA loves",
               any(a["league"] == "wc" for a in loves),
               f"loves={[a['team'] for a in loves]}")
+
+    # memory: a null/garbage confidence from the LLM must not crash upsert_take
+    try:
+        memory.upsert_take("Conf probe", "first stance", None, "null conf")
+        memory.upsert_take("Conf probe", "second stance", "high", "string conf")
+        memory.upsert_take("Conf probe", "third stance", 0.8, "real conf")
+        probe = [t for t in memory.get_takes() if t["subject"] == "Conf probe"][0]
+        res.check("data", "upsert_take survives null/garbage confidence",
+                  probe["confidence"] == 0.8 and len(probe["history"]) == 2,
+                  f"conf={probe['confidence']} history={len(probe['history'])}")
+    except Exception as e:  # noqa: BLE001
+        res.check("data", "upsert_take survives null/garbage confidence", False, repr(e))
+    res.check("data", "_conf clamps out-of-range and defaults on junk",
+              memory._conf(2.5) == 1.0 and memory._conf(-9) == 0.0
+              and memory._conf(None) == 0.5 and memory._conf("0.3") == 0.3)
+
+    # memory: the outbound dedup keys are bounded (they used to grow forever)
+    for i in range(memory.KEYS_MAX + 100):
+        memory.log_sent("mO", f"k{i}", "msg")
+    ob = memory._read("outbound.json", {})
+    res.check("data", "outbound keys stay capped, newest retained",
+              len(ob["keys"]) == memory.KEYS_MAX and memory.already_sent("mO", f"k{memory.KEYS_MAX + 99}")
+              and not memory.already_sent("mO", "k0"),
+              f"keys={len(ob['keys'])}")
+    memory._update("outbound.json",
+                   lambda d: d["keys"].__setitem__("mO:stale", time.time() - memory.KEYS_TTL - 1), {})
+    memory.log_sent("mO", "fresh", "msg")
+    res.check("data", "outbound keys age out past the TTL",
+              not memory.already_sent("mO", "stale"))
+
+    _check_roam_retry(res)
+
+
+def _check_roam_retry(res):
+    """A judge timeout used to lose the headline forever: roam marked every new item seen
+    up front, so the retry never came. Stub the judge to fail, then recover."""
+    import roam
+    heads = [{"key": "r1", "headline": "A", "desc": "d"}]
+    real_headlines, real_judge, real_send = espn.recent_headlines, roam._judge, roam._tg_send
+    espn.recent_headlines = lambda l, t, limit=None: list(heads)
+    roam._tg_send = lambda chat_id, text: None
+    scope = "nba:phoenix suns"
+    try:
+        memory.set_team("mR", "nba", "Phoenix Suns", "PHX", chat_id=1)
+        roam._judge = lambda *a: None
+        roam.run_once(dry_run=True)                      # cold start: baseline, no messages
+        heads.append({"key": "r2", "headline": "B", "desc": "d"})
+        roam.run_once(dry_run=True)                      # judge fails on the new item
+        res.check("data", "judge failure leaves the headline unseen (retried, not dropped)",
+                  not memory.headline_seen(scope, "r2"))
+
+        roam._judge = lambda *a: {"notable": True, "message": "suns news",
+                                  "take": {"subject": "Suns", "stance": "up", "confidence": None}}
+        roam.run_once(dry_run=True)                      # judge recovers -> news delivered
+        res.check("data", "recovered judge delivers the previously-failed headline",
+                  memory.headline_seen(scope, "r2") and memory.already_sent("mR", "r2"))
+
+        def boom(*a):
+            raise AssertionError("re-judged an already-handled headline")
+        roam._judge = boom
+        roam.run_once(dry_run=True)                      # handled items aren't re-judged
+        res.check("data", "a judged headline is never re-judged or re-sent", True)
+    except AssertionError as e:
+        res.check("data", "a judged headline is never re-judged or re-sent", False, str(e))
+    finally:
+        espn.recent_headlines, roam._judge, roam._tg_send = real_headlines, real_judge, real_send
 
 
 # ---------------------------------------------------------------------------

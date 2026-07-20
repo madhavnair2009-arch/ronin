@@ -5,6 +5,31 @@ architecture and `README.md` for how to run it.
 
 ---
 
+### Reliability pass: the three review-#3 bugs (2026-07-20)
+Three failure modes from the CHANGELOG review that had never actually bitten a user yet,
+fixed together with regression cases so they can't come back. Full harness **32/32**.
+- **A judge timeout no longer eats the news** (`roam.py`). `run_once` marked every new
+  headline seen *up front* — so if `_judge` timed out or emitted garbage, that item was
+  burned and never retried. Now a headline is marked seen only once a judgment comes
+  back; a failed judge leaves it unseen for the next pass. Re-blasting was never the
+  risk the up-front marking implied — `already_sent` has always been that guard.
+  Judged-but-not-notable items *are* marked, so we don't pay to re-judge them.
+- **`float(None)` crash on null confidence** (`memory.py`). The model emits
+  `"confidence": null` (and occasionally `"high"`) often enough, and `.get(k, 0.5)`
+  doesn't help when the key exists holding null. New `_conf()` clamps to `[0,1]` and
+  falls back to 0.5 — applied to the incoming value, the stored value it's compared
+  against, and the `takes.json` seed. Mirrors the coercion `upsert_affinity` already
+  did for `score`.
+- **Unbounded `outbound.json`** (`memory.py`). `sent` was capped at 500; the `keys`
+  dedup map was the real leak and grew forever. Now ages out past 90 days, then caps at
+  the 2000 newest. Both windows are far wider than the cursor's 200-per-scope, so a
+  pruned key can't cycle back around and re-send.
+- **Known, untouched:** `scope` in `run_once` is `league:team` with no uid, but it's
+  read/written inside the per-user loop — so if two users follow the same team, the
+  first user's pass marks the headlines seen and the second never hears about them.
+  Same "news silently lost" family as the first bug above. The fix (uid in the scope
+  key) cold-starts every cursor, which baselines silently rather than blasting.
+
 ## 2026-07 — from stat bot to an opinionated, autonomous agent
 
 This stretch took ronin from a multi-sport lookup bot to the design doc's "full

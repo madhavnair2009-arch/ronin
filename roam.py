@@ -238,15 +238,19 @@ def run_once(dry_run=False):
             new_heads = [h for h in heads if not memory.headline_seen(scope, h["key"])]
             if not new_heads:
                 continue
-            # Mark them all seen up front so a crash mid-pass won't re-blast them.
-            memory.mark_seen(scope, [h["key"] for h in new_heads])
 
             for h in new_heads:
                 if memory.already_sent(uid, h["key"]):
+                    memory.mark_seen(scope, [h["key"]])
                     continue
                 decision = _judge(uid, team, league, h)
                 if not decision:
+                    # Judge timed out or emitted garbage. Leave the headline UNSEEN so the
+                    # next pass retries it — marking it here would drop that news forever.
+                    # Re-blasting isn't a risk: already_sent is the guard against that.
                     continue
+                # Judged (notable or not), so we're done with it: don't pay to re-judge.
+                memory.mark_seen(scope, [h["key"]])
                 take = decision.get("take")
                 if isinstance(take, dict) and take.get("subject"):
                     memory.upsert_take(

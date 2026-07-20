@@ -212,7 +212,7 @@ def _seed_takes_from_file():
         out.append({
             "subject": t["subject"],
             "stance": t["stance"],
-            "confidence": t.get("confidence", 0.5),
+            "confidence": _conf(t.get("confidence")),
             "reasoning": t.get("reasoning", ""),
             "evidence": [],
             "formed_at": now,
@@ -231,12 +231,22 @@ def get_takes():
         return data
 
 
+def _conf(value, default=0.5):
+    """Confidence as a clamped float. The LLM can emit null/"high"/nonsense, and older
+    records may already hold one, so every read of a confidence goes through here."""
+    try:
+        return max(0.0, min(1.0, float(value)))
+    except (TypeError, ValueError):
+        return default
+
+
 def upsert_take(subject, stance, confidence, reasoning="", evidence=None):
     """Revise an existing take on this subject (pushing the prior stance to history)
     or form a new one. Match on case-insensitive subject."""
     subject = (subject or "").strip()
     if not subject:
         return
+    confidence = _conf(confidence)
     now = time.time()
 
     def go(data):
@@ -245,7 +255,7 @@ def upsert_take(subject, stance, confidence, reasoning="", evidence=None):
         for t in data:
             if t.get("subject", "").strip().lower() == subject.lower():
                 changed = (stance != t.get("stance")
-                           or abs(float(confidence) - float(t.get("confidence", 0))) > 1e-9)
+                           or abs(confidence - _conf(t.get("confidence"), 0.0)) > 1e-9)
                 if changed:
                     t.setdefault("history", []).append({
                         "stance": t.get("stance"),
@@ -387,11 +397,25 @@ def already_sent(uid, key):
     return f"{uid}:{key}" in _read("outbound.json", {}).get("keys", {})
 
 
+KEYS_TTL = 90 * 86400   # a headline older than this will never resurface upstream
+KEYS_MAX = 2000         # ...and a hard ceiling in case timestamps are missing/skewed
+
+
 def log_sent(uid, key, text):
     now = time.time()
 
     def go(d):
-        d.setdefault("keys", {})[f"{uid}:{key}"] = now
+        keys = d.setdefault("keys", {})
+        keys[f"{uid}:{key}"] = now
+        # Prune: `sent` was already capped, but `keys` grew forever. Age out first,
+        # then cap by recency. Both are far wider than the cursor's 200/scope window,
+        # so a pruned key can't come back around and re-blast.
+        cutoff = now - KEYS_TTL
+        keys = {k: ts for k, ts in keys.items() if isinstance(ts, (int, float)) and ts >= cutoff}
+        if len(keys) > KEYS_MAX:
+            newest = sorted(keys.items(), key=lambda kv: kv[1], reverse=True)[:KEYS_MAX]
+            keys = dict(newest)
+        d["keys"] = keys
         d.setdefault("sent", []).append({"uid": str(uid), "key": key, "text": text, "at": now})
         d["sent"] = d["sent"][-500:]
     _update("outbound.json", go, {})
