@@ -503,7 +503,7 @@ def _cup_champion(key, disp, stage, start, end):
             wn = (win or {}).get("team", {}).get("displayName", "?")
             ln = (los or {}).get("team", {}).get("displayName", "?")
             score = f"{(win or {}).get('score','')}-{(los or {}).get('score','')}"
-            out = f"🏆 {wn} won the {disp} — beat {ln} {score} in the final."
+            out = f"🏆 {wn} won the {disp}, beat {ln} {score} in the final."
             return out + (f"\n{note}" if note and note.lower() not in out.lower() else "")
         names = " vs ".join(c.get("team", {}).get("displayName", "?") for c in comps)
         return f"{disp}: the final is set, {names} ({e.get('date','')[:10]}). Not played yet."
