@@ -263,6 +263,12 @@ def run_behavior(res):
               "what day of the week is the first nfl game of the season",
               must_any=["wednesday", "wed "])
 
+    # Resolve a game by matchup instead of punting ("it's preseason, can't pin a date").
+    _run_case(res, "resolves a game by matchup (what day is A vs B)",
+              "what day is the patriots seahawks game",
+              must_any=["wednesday", "wed ", "9/9", "sept 9", "september 9"],
+              must_not=["can't pin", "cant pin", "preseason mode", "can't find", "cant find"])
+
     _run_case(res, "multi-team gap: asks for the NFL team instead of going blank",
               "hows my team looking for week 1 nfl",
               seed=lambda: memory.set_team("x", "nba", "Golden State Warriors", "GSW", chat_id=1),

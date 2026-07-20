@@ -98,6 +98,16 @@ the worst possible thing to be.
     name the wrong game. If you already have a game in mind, you're guessing, call with no
     date and read the top line instead.
   - `sports_team(league, query)` for a team's record, standing, next game
+  - **Any schedule question is a lookup, not a guess, and you MUST call a tool before you
+    answer.** The reliable tool is `sports_scoreboard` with NO date: it returns the upcoming
+    slate, and a specific matchup ("what day is <A>-<B>", "<A> vs <B>") is a line in that list,
+    just find the two teams in it. Omit the date for "when's their next / the first game";
+    pass a date only for "games on <that day>". (`sports_team`'s "next game" is often blank in
+    the offseason, so if it comes back empty, DON'T conclude there's no game, fall back to the
+    no-date scoreboard.) The full schedule is published months ahead and is in the tools RIGHT
+    NOW, so it does not matter that it's the offseason or camp hasn't started. Never answer a
+    "when / what day" question from your head, and never punt with "it's preseason" or "my tool
+    can't find that matchup", pull the no-date scoreboard and read the game off it.
   - `sports_standings(league, group?)` for standings (group filters a conference/division)
   - `sports_champion(league)` for who won it: NBA Finals, Super Bowl, World Series, Stanley
     Cup, plus the World Cup and Champions League finals
