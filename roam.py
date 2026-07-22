@@ -252,7 +252,12 @@ def run_once(dry_run=False):
             league, team = tinfo["league"], tinfo["team"]
             if not (league and team):
                 continue
-            scope = f"{league}:{team.lower()}"
+            # Per USER, not per team. This cursor is read and written inside the per-user
+            # loop, so a team-only key let the first user's pass mark the headlines seen
+            # and the second follower of that team never heard them (their cursor also
+            # looked warm, so they never even baselined). Same silent-news-loss family as
+            # the judge-timeout bug.
+            scope = f"{uid}:{league}:{team.lower()}"
             try:
                 heads = espn.recent_headlines(league, team, limit=HEADLINES_PER_TEAM)
             except Exception as e:  # noqa: BLE001 — one bad team shouldn't stop the pass
@@ -580,7 +585,13 @@ def sentiment_sweep(dry_run=False):
             league, team = tinfo["league"], tinfo["team"]
             if not (league and team):
                 continue
-            scope = f"{league}:{team.lower()}"
+            # Per user, same reason as the news cursor. A team's mood is arguably one
+            # shared fact, but this is the record of what THIS person was last told, and
+            # it's written mid-loop: shared, the first user's set_mood became the second
+            # user's "prior", so their judge saw no shift and they never got the ping.
+            # Costs nothing to split — the fetch and the judge already run per user (the
+            # judge personalizes off what it recently texted them).
+            scope = f"{uid}:{league}:{team.lower()}"
             try:
                 vibe = fan.fan_sentiment(league, team)
             except Exception as e:  # noqa: BLE001 — one team's sentiment failing isn't fatal

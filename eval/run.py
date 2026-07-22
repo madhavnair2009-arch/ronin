@@ -218,6 +218,7 @@ def run_data(res):
     _check_web_parser(res)
     _check_sentiment_sweep(res)
     _check_roam_retry(res)
+    _check_shared_cursor(res)
     _check_thinking_strip(res)
 
 
@@ -234,7 +235,7 @@ def _check_sentiment_sweep(res):
     fan.fan_sentiment = lambda lg, tp=None: "REDDIT: ... BLUESKY: ..."
     sends = []
     roam._tg_send = lambda cid, msg: sends.append(msg)
-    scope = "nba:detroit pistons"
+    scope = "mV:nba:detroit pistons"  # mood is scoped per user, not per team
     try:
         # cold start: no prior mood -> baseline, no ping
         roam._vibe_judge = lambda *a: {"mood": "quietly buzzing on the young core",
@@ -415,6 +416,56 @@ def _check_relationship_memory(res):
               and "Steph vs LeBron" in sp and "remember about them" in sp)
 
 
+def _check_shared_cursor(res):
+    """Two people following the SAME team must both hear its news. The cursor and the mood
+    were keyed by team alone but read/written inside the per-user loop, so the first user's
+    pass consumed the news and the second was silently starved."""
+    import roam
+    from mcp import fan
+    memory._update("relationships.json", lambda d: d.clear(), {})  # isolate: run_once scans all
+    memory._write("cursor.json", {})
+    memory._write("mood.json", {})
+    heads = [{"key": "s1", "headline": "A", "desc": "d"}]
+    real_heads, real_judge = espn.recent_headlines, roam._judge
+    real_fan, real_vibe, real_send = fan.fan_sentiment, roam._vibe_judge, roam._tg_send
+    sends = []
+    try:
+        espn.recent_headlines = lambda l, t, limit=None: list(heads)
+        roam._tg_send = lambda chat_id, text: sends.append(chat_id)
+        memory.set_team("uA", "nba", "Boston Celtics", "BOS", chat_id=101)
+        memory.set_team("uB", "nba", "Boston Celtics", "BOS", chat_id=202)
+        roam._judge = lambda *a: {"notable": True, "message": "celtics news",
+                                  "take": {"subject": "Celtics", "stance": "up",
+                                           "confidence": 0.6}}
+        roam.run_once(dry_run=False)                     # cold start: both baseline, silent
+        res.check("data", "both followers of a team baseline silently on cold start", not sends)
+
+        heads.append({"key": "s2", "headline": "B", "desc": "d"})
+        roam.run_once(dry_run=False)
+        res.check("data", "two users on the same team BOTH get its news (shared cursor)",
+                  sorted(sends) == [101, 202], f"reached {sorted(sends)}")
+
+        # Same defect on the mood axis: a judge only calls a shift when the vibe differs
+        # from the mood it last saw, so a shared prior let the first user's write mask it.
+        sends.clear()
+        fan.fan_sentiment = lambda lg, tp=None: "REDDIT: ... BLUESKY: ..."
+        memory._update("relationships.json", lambda d: [  # reset the news pass's min-gap throttle
+            d[u].pop("last_proactive", None) for u in d], {})
+        roam._vibe_judge = lambda uid, team, league, vibe, prior: {
+            "mood": "steady", "shifted": False, "notable": False, "message": ""}
+        roam.sentiment_sweep(dry_run=False)              # baseline each user's mood
+        SOUR = "fans turning on the coach"
+        roam._vibe_judge = lambda uid, team, league, vibe, prior: {
+            "mood": SOUR, "shifted": prior != SOUR, "notable": prior != SOUR,
+            "message": "room's souring"}
+        roam.sentiment_sweep(dry_run=False)
+        res.check("data", "two users on the same team BOTH get the vibe shift (shared mood)",
+                  sorted(sends) == [101, 202], f"reached {sorted(sends)}")
+    finally:
+        espn.recent_headlines, roam._judge = real_heads, real_judge
+        fan.fan_sentiment, roam._vibe_judge, roam._tg_send = real_fan, real_vibe, real_send
+
+
 def _check_thinking_strip(res):
     """graff's harness prompt lets the model narrate in <thinking> tags, and -p prints the
     whole answer — so it shipped into the chat. Nothing but the answer may survive."""
@@ -447,7 +498,7 @@ def _check_roam_retry(res):
     real_headlines, real_judge, real_send = espn.recent_headlines, roam._judge, roam._tg_send
     espn.recent_headlines = lambda l, t, limit=None: list(heads)
     roam._tg_send = lambda chat_id, text: None
-    scope = "nba:phoenix suns"
+    scope = "mR:nba:phoenix suns"  # news cursor is scoped per user, not per team
     try:
         memory.set_team("mR", "nba", "Phoenix Suns", "PHX", chat_id=1)
         roam._judge = lambda *a: None
@@ -623,10 +674,15 @@ def run_behavior(res):
               must_any=["wednesday", "wed ", "9/9", "sept 9", "september 9"],
               must_not=["can't pin", "cant pin", "preseason mode", "can't find", "cant find"])
 
+    # It must ASK which NFL team, not answer about the NBA team it happens to have. The
+    # must_any is the ask itself ("?" covers phrasings the enumerated list kept missing —
+    # "which squad is yours?" used to fail this); must_not is the real failure mode, using
+    # the Warriors as if they were the NFL team.
     _run_case(res, "multi-team gap: asks for the NFL team instead of going blank",
               "hows my team looking for week 1 nfl",
               seed=lambda: memory.set_team("x", "nba", "Golden State Warriors", "GSW", chat_id=1),
-              must_any=["football", "nfl team", "nfl", "warriors are an nba", "who"])
+              must_any=["football", "nfl team", "nfl", "warriors are an nba", "who", "which", "?"],
+              must_not=["warriors are looking", "warriors look good", "warriors open week"])
 
     # Whatever the real WC status is (final set, in progress, or decided), the reply must
     # come from the tool — never a guessed winner. The finalists/result words below all
