@@ -5,6 +5,25 @@ architecture and `README.md` for how to run it.
 
 ---
 
+### Reddit fan sentiment, via OAuth this time (2026-07-21)
+Revisited Reddit now that kuri-fetch is proven live. The scrape route is still dead — a raw
+kuri-fetch of old.reddit from the Fly IP returns **403** (Reddit walls datacenter IPs on the
+unauthenticated paths). But a bogus-cred probe of the OAuth token endpoint returns **401**,
+not 403 — so the authenticated API answers from the same IP. So Reddit goes the Bluesky
+route: a registered app + a token, not scraping.
+
+- **`mcp/reddit.py`** replaces the dead scrape-based `reddit_nba.py`. App-only
+  (`client_credentials`) OAuth — no user password, just a "script" app's id/secret, the
+  direct parallel to a Bluesky app-password. Reads `oauth.reddit.com/r/<sub>/hot|search`,
+  drops stickied mod posts, ranks by score. Multi-sport: maps league -> subreddit
+  (nba/nfl/baseball/hockey, soccer leagues -> r/soccer). Degrades gracefully with no creds,
+  like the Bluesky server.
+- Persona now points ronin at Reddit first for fan takes (richer than the media-skewed
+  Bluesky feed), Bluesky for the broader read. `mcp__reddit__*` allowlisted (it only reads
+  fixed subreddit endpoints — no new SSRF surface).
+- **Needs a secret to go live:** `REDDIT_CLIENT_ID` / `REDDIT_CLIENT_SECRET` from a
+  reddit.com/prefs/apps "script" app. Harness 44/44 (mapping + parse, network stubbed).
+
 ### Web search: a grounded answer for what ESPN can't cover (2026-07-21)
 A real gap: ronin proactively texted about Curry's HOF exhibit, the user asked "who's
 funding it?", and the sports tools had no answer. New `web_search` tool so ronin can look

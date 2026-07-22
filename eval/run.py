@@ -246,6 +246,24 @@ def _check_web_parser(res):
     res.check("data", "web search is SSRF-safe: single fixed host, user text only in query",
               web.SERP.startswith("https://html.duckduckgo.com/") and web.SERP.endswith("q="))
 
+    # reddit sentiment: league->subreddit mapping + listing parse (network stubbed)
+    from mcp import reddit
+    res.check("data", "reddit maps leagues to subreddits (soccer funnels, nba default)",
+              reddit._sub_for("nba") == "nba" and reddit._sub_for("mlb") == "baseball"
+              and reddit._sub_for("ucl") == "soccer" and reddit._sub_for("xyz") == "nba")
+    sample = [{"title": "[Woj] big trade", "score": 4200, "num_comments": 900, "stickied": False},
+              {"title": "Daily Thread", "score": 50, "num_comments": 30, "stickied": True},
+              {"title": "Game Thread", "score": 1500, "num_comments": 5000, "stickied": False}]
+    real_get = reddit._get
+    reddit._get = lambda path: sample
+    try:
+        out = reddit.reddit_sentiment("nba")
+    finally:
+        reddit._get = real_get
+    res.check("data", "reddit parse: drops stickied, ranks by score, labels the sub",
+              "r/nba" in out and "Woj" in out and "Daily Thread" not in out
+              and out.index("Woj") < out.index("Game Thread"))
+
 
 def _check_calibration(res):
     """Take de-dup + grading: a storyline is one revisable belief, and being right earns
