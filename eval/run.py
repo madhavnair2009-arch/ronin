@@ -283,6 +283,26 @@ def _check_web_parser(res):
               "via search" in fb and "Why the Lakers offseason flopped" in fb
               and "Reddit" not in fb.split("flopped")[1].split("\n")[0])  # trailing "- Reddit" stripped
 
+    # the model-facing tool blends BOTH sources, and one failing doesn't sink the call
+    from mcp import fan
+    real_r, real_b = fan.rdt.reddit_sentiment, fan.bsky.fan_sentiment
+    fan.rdt.reddit_sentiment = lambda lg, tp: "Top of r/nba: [Woj] trade talk"
+    fan.bsky.fan_sentiment = lambda tp: "Bluesky chatter: nobody's panicking"
+    try:
+        both = fan.fan_sentiment("nba", "trade")
+        res.check("data", "fan_sentiment blends Reddit + Bluesky under both headers",
+                  "REDDIT" in both and "BLUESKY" in both
+                  and "Woj" in both and "nobody's panicking" in both)
+        # one source down -> still return the other, with a note (not a crash)
+        def boom(*a):
+            raise RuntimeError("bluesky down")
+        fan.bsky.fan_sentiment = boom
+        degraded = fan.fan_sentiment("nba", "trade")
+        res.check("data", "fan_sentiment survives one source failing",
+                  "Woj" in degraded and "unavailable" in degraded)
+    finally:
+        fan.rdt.reddit_sentiment, fan.bsky.fan_sentiment = real_r, real_b
+
 
 def _check_calibration(res):
     """Take de-dup + grading: a storyline is one revisable belief, and being right earns

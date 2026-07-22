@@ -1,1 +1,1 @@
-{"mcpServers":{"espn":{"command":"python3","args":["mcp/espn.py"]},"sentiment":{"command":"python3","args":["mcp/sentiment.py"]},"web":{"command":"python3","args":["mcp/web.py"]},"reddit":{"command":"python3","args":["mcp/reddit.py"]}}}
+{"mcpServers":{"espn":{"command":"python3","args":["mcp/espn.py"]},"sentiment":{"command":"python3","args":["mcp/fan.py"]},"web":{"command":"python3","args":["mcp/web.py"]}}}

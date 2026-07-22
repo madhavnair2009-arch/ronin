@@ -5,6 +5,21 @@ architecture and `README.md` for how to run it.
 
 ---
 
+### One blended sentiment tool: Reddit + Bluesky together (2026-07-21)
+The two sentiment sources cover each other's faults — Reddit (via search) is deeper on fan
+takes but can lag real-time; Bluesky is live but skews media. So `fan_sentiment(league?,
+topic?)` now pulls **both at once** (in parallel) and hands ronin the pair under labeled
+headers. `mcp/fan.py` is the new front — a thin combiner over the `reddit` and `sentiment`
+(Bluesky) modules, now libraries rather than separately-registered servers. `.mcp.json`'s
+`sentiment` entry points at it; the model sees one sentiment tool, not three.
+- **Disagreement is a feature:** when Reddit's panicking and Bluesky's calm (or vice versa),
+  the persona tells ronin to call that split out — it's a more interesting read than either
+  feed alone.
+- **Resilient:** the two fetches run concurrently, and one source failing returns the other
+  with a note rather than sinking the call.
+- Firewall simplified back to espn/sentiment/web (no separate reddit server). Harness 47/47
+  (blend + one-source-down path, network stubbed).
+
 ### Reddit fan sentiment, two-tier (works today, upgrades later) (2026-07-21)
 Revisited Reddit now that kuri-fetch is proven live. Empirically from the Fly IP: a raw
 kuri-fetch of old.reddit still **403**s (Reddit walls datacenter IPs on the unauthenticated
