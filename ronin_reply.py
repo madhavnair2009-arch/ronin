@@ -155,6 +155,32 @@ def _ago(delta):
     return f"{secs // 86400}d ago"
 
 
+# graff is a coding harness: its built-in system prompt leaves the model free to narrate
+# its reasoning in <thinking> tags, and -p prints the whole answer to stdout — so that
+# narration ships straight into the user's chat. Strip it at the boundary instead of
+# asking the persona nicely; prompt rules are probabilistic, this isn't.
+_THINK = "thinking|think|reasoning|scratchpad"
+_THINK_BLOCK = re.compile(rf"<({_THINK})\b[^>]*>.*?</\1\s*>", re.DOTALL | re.IGNORECASE)
+_THINK_CLOSE = re.compile(rf"</({_THINK})\s*>", re.IGNORECASE)
+_THINK_OPEN = re.compile(rf"<({_THINK})\b[^>]*>", re.IGNORECASE)
+
+
+def _strip_thinking(text):
+    """Drop any <thinking>…</thinking> narration the model leaked into its answer."""
+    text = _THINK_BLOCK.sub("", text)
+    # A leftover unmatched tag means the block ran off one end of the output: everything
+    # before a stray close, or after a stray open, is reasoning rather than an answer.
+    m = None
+    for m in _THINK_CLOSE.finditer(text):
+        pass
+    if m:
+        text = text[m.end():]
+    m = _THINK_OPEN.search(text)
+    if m:
+        text = text[:m.start()]
+    return text.strip()
+
+
 def _session_name(sender_id):
     safe = re.sub(r"[^A-Za-z0-9_-]", "_", str(sender_id))[:64] or "anon"
     return f"sess_{safe}"
@@ -194,7 +220,7 @@ def reply(sender_id, message):
         err = (out.stderr or "").strip().splitlines()
         detail = err[-1] if err else f"exit {out.returncode}"
         return f"(ronin hiccup: {detail})"
-    return out.stdout.strip() or "…got nothing back, try again?"
+    return _strip_thinking(out.stdout) or "…got nothing back, try again?"
 
 
 if __name__ == "__main__":

@@ -20,6 +20,7 @@ Behavior needs ~/bin/graff + ANTHROPIC_API_KEY (read from ./.env like the bot).
 
 import datetime
 import os
+import re
 import sys
 import tempfile
 import time
@@ -217,6 +218,7 @@ def run_data(res):
     _check_web_parser(res)
     _check_sentiment_sweep(res)
     _check_roam_retry(res)
+    _check_thinking_strip(res)
 
 
 def _check_sentiment_sweep(res):
@@ -413,6 +415,30 @@ def _check_relationship_memory(res):
               and "Steph vs LeBron" in sp and "remember about them" in sp)
 
 
+def _check_thinking_strip(res):
+    """graff's harness prompt lets the model narrate in <thinking> tags, and -p prints the
+    whole answer — so it shipped into the chat. Nothing but the answer may survive."""
+    import ronin_reply
+    s = ronin_reply._strip_thinking
+    res.check("data", "a leaked <thinking> block never reaches the user",
+              s("<thinking>Simple intro question. Stay in character.</thinking>ronin. i live "
+                "in sports way too much.") == "ronin. i live in sports way too much.")
+    res.check("data", "thinking is stripped mid-answer and in bulk",
+              s("hey <THINK>hm</think> there <reasoning>x</reasoning>now") == "hey  there now")
+    # A turn cut off mid-thought leaves a dangling tag on one end or the other.
+    res.check("data", "an unclosed thinking tag takes the rest of the output with it",
+              s("real answer\n<thinking>ran out of tok") == "real answer")
+    res.check("data", "an unmatched closing tag drops the reasoning before it",
+              s("ran out of budget</thinking>the actual take") == "the actual take")
+    # Must not eat legitimate prose: ronin talks about thinking constantly.
+    res.check("data", "ordinary talk about thinking survives untouched",
+              s("i think the Spurs are for real, been thinking about it all year")
+              == "i think the Spurs are for real, been thinking about it all year")
+    # Reasoning-only output is empty after stripping — reply() must fall back, not send "".
+    res.check("data", "a reasoning-only reply strips to empty (reply falls back)",
+              s("<thinking>no idea</thinking>") == "")
+
+
 def _check_roam_retry(res):
     """A judge timeout used to lose the headline forever: roam marked every new item seen
     up front, so the retry never came. Stub the judge to fail, then recover."""
@@ -559,6 +585,9 @@ def _run_case(res, name, message, seed=None, must=None, must_not=None, must_any=
     if NO_EM_DASH in reply:  # global rule on every reply
         ok = False
         detail.append("contains an em dash")
+    if re.search(r"</?(thinking|think|reasoning|scratchpad)\b", reply, re.IGNORECASE):
+        ok = False  # the model narrating its reasoning must never survive to the user
+        detail.append("leaked a thinking tag")
     res.check("behavior", name, ok, "; ".join(detail))
 
 
@@ -569,11 +598,17 @@ def run_behavior(res):
               "yo what was the first nfl game of the season",
               must=["patriot", "seahawk"], must_any=["9/9", "sept 9", "september 9", "9-9"])
 
+    # What's being locked in is the refusal (must_not) — "I can only see today's games".
+    # must_any is just evidence it really resolved tomorrow and looked: on a day with no
+    # slate the right answer names the weekday and says nothing's on, with no matchup or
+    # tipoff time to match, so those count too.
     _run_case(res, "tomorrow's WNBA slate: pulls a date, doesn't refuse",
               "what wnba games are on tomorrow",
               must_not=["only see today", "can only see today", "just today's",
                         "i can only see today"],
-              must_any=["@", " vs ", " pm", " et", "tomorrow"])
+              must_any=["@", " vs ", " pm", " et", "tomorrow",
+                        "monday", "tuesday", "wednesday", "thursday", "friday",
+                        "saturday", "sunday", "nothing on", "no games"])
 
     # Locks in the "Wed 9/9 not Thu" weekday fix. Routes through the first-game path
     # (the reliable one); resolving a game by "team-A vs team-B" is a separate, weaker
