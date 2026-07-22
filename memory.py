@@ -591,6 +591,20 @@ def mark_seen(scope, keys):
 
 
 # ---------------------------------------------------------------------------
+# Axis: FAN MOOD per team scope — the last read of the vibe, so the sentiment sweep can
+# spot a SHIFT (fans turning on a coach, hype building) rather than re-announce a steady
+# mood. Storing the new mood after a ping is what stops it re-pinging until things move.
+# ---------------------------------------------------------------------------
+def get_mood(scope):
+    return _read("mood.json", {}).get(scope)
+
+
+def set_mood(scope, mood):
+    _update("mood.json",
+            lambda d: d.__setitem__(scope, {"mood": mood, "at": time.time()}), {})
+
+
+# ---------------------------------------------------------------------------
 # Dedup log — what ronin has already proactively said
 # ---------------------------------------------------------------------------
 def already_sent(uid, key):

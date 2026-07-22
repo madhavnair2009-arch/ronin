@@ -5,6 +5,18 @@ architecture and `README.md` for how to run it.
 
 ---
 
+### Proactive on a vibe shift, not just on news (2026-07-21)
+Roam reacted to events (a trade, an injury); now it also reacts to the **mood turning**. New
+`sentiment_sweep()` pass reads the blended fan sentiment for a user's team, compares it to the
+mood it logged last time, and pings only on a real shift — fans souring on a coach, hype
+building, panic setting in.
+- **Self-throttling by design:** it stores the new mood after each read, so once it pings a
+  shift the next pass sees no further move and stays quiet. Plus the same rails as the news
+  pass — a silent cold-start baseline, the per-user cap, and the 6h cross-pass min-gap (shared
+  via `touch_proactive`, so a vibe ping and a news ping can't both fire in the same window).
+- New `mood.json` axis (`get_mood`/`set_mood`, per `league:team` scope). Runs every ~12h
+  (`ROAM_SENTIMENT_EVERY=24`). Harness 60/60 (cold-start / shift-ping / steady-quiet, stubbed).
+
 ### One blended sentiment tool: Reddit + Bluesky together (2026-07-21)
 The two sentiment sources cover each other's faults — Reddit (via search) is deeper on fan
 takes but can lag real-time; Bluesky is live but skews media. So `fan_sentiment(league?,

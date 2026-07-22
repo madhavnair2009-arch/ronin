@@ -135,11 +135,12 @@ def _handle_command(chat_id, sender, text):
 REFLECT_EVERY = int(os.environ.get("ROAM_REFLECT_EVERY", "48"))
 GRADE_EVERY = int(os.environ.get("ROAM_GRADE_EVERY", "48"))
 DIGEST_EVERY = int(os.environ.get("ROAM_DIGEST_EVERY", "8"))  # ~4h: keep memory of people fresher
+SENTIMENT_EVERY = int(os.environ.get("ROAM_SENTIMENT_EVERY", "24"))  # ~12h: catch mood shifts
 
 
 def _roam_scheduler():
-    print(f"[roam] scheduler on, every {ROAM_INTERVAL}s "
-          f"(reflect/{REFLECT_EVERY}, grade/{GRADE_EVERY}, digest/{DIGEST_EVERY} ticks)",
+    print(f"[roam] scheduler on, every {ROAM_INTERVAL}s (reflect/{REFLECT_EVERY}, "
+          f"grade/{GRADE_EVERY}, digest/{DIGEST_EVERY}, sentiment/{SENTIMENT_EVERY} ticks)",
           file=sys.stderr)
     # Cold start: if this fresh machine has no allegiances yet, form them once now so
     # ronin has a personality before the first daily reflection comes around.
@@ -156,6 +157,8 @@ def _roam_scheduler():
             roam.run_once()
             if tick % DIGEST_EVERY == 0:
                 roam.digest()
+            if tick % SENTIMENT_EVERY == 0:
+                roam.sentiment_sweep()
             if tick % GRADE_EVERY == 0:
                 roam.grade()
             if tick % REFLECT_EVERY == 0:

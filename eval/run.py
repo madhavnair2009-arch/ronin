@@ -215,7 +215,45 @@ def run_data(res):
     _check_calibration(res)
     _check_relationship_memory(res)
     _check_web_parser(res)
+    _check_sentiment_sweep(res)
     _check_roam_retry(res)
+
+
+def _check_sentiment_sweep(res):
+    """The vibe pass baselines a mood silently, pings only on a real shift, and won't ping a
+    steady mood — the self-throttle that keeps it from being annoying."""
+    import roam
+    from mcp import fan
+    # isolate: the sweep scans every active user, so clear the others earlier checks created
+    memory._update("relationships.json", lambda d: d.clear(), {})
+    memory._write("mood.json", {})
+    memory.set_team("mV", "nba", "Detroit Pistons", "DET", chat_id=1)
+    real_fan, real_judge, real_send = fan.fan_sentiment, roam._vibe_judge, roam._tg_send
+    fan.fan_sentiment = lambda lg, tp=None: "REDDIT: ... BLUESKY: ..."
+    sends = []
+    roam._tg_send = lambda cid, msg: sends.append(msg)
+    scope = "nba:detroit pistons"
+    try:
+        # cold start: no prior mood -> baseline, no ping
+        roam._vibe_judge = lambda *a: {"mood": "quietly buzzing on the young core",
+                                       "shifted": False, "notable": False, "message": ""}
+        roam.sentiment_sweep(dry_run=False)
+        res.check("data", "vibe sweep baselines mood on cold start, no ping",
+                  memory.get_mood(scope) is not None and not sends)
+        # a real shift -> one ping, new mood stored
+        roam._vibe_judge = lambda *a: {"mood": "fans turning on the coach", "shifted": True,
+                                       "notable": True, "message": "heads up, room's souring on the coach"}
+        roam.sentiment_sweep(dry_run=False)
+        res.check("data", "vibe sweep pings on a real mood shift",
+                  len(sends) == 1 and "coach" in sends[0]
+                  and memory.get_mood(scope)["mood"].startswith("fans turning"))
+        # steady mood next time -> no new ping
+        roam._vibe_judge = lambda *a: {"mood": "still sour, no change", "shifted": False,
+                                       "notable": False, "message": ""}
+        roam.sentiment_sweep(dry_run=False)
+        res.check("data", "vibe sweep stays quiet on a steady mood", len(sends) == 1)
+    finally:
+        fan.fan_sentiment, roam._vibe_judge, roam._tg_send = real_fan, real_judge, real_send
 
 
 def _check_web_parser(res):

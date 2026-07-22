@@ -32,6 +32,7 @@ import urllib.request
 
 import memory
 from mcp import espn
+from mcp import fan
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 
@@ -499,6 +500,126 @@ def grade(dry_run=False):
 
 
 # ---------------------------------------------------------------------------
+# SENTIMENT SWEEP: ping when the VIBE around a team shifts, not just on news.
+# News roaming reacts to events; this reacts to the mood turning (fans souring on a
+# coach, hype building). It reads the blended fan sentiment, compares it to the mood it
+# saw last time, and only pings on a real move — then stores the new mood so it won't
+# re-ping a steady vibe.
+# ---------------------------------------------------------------------------
+SENTIMENT_ADDENDUM = """
+## VIBE MODE (you're checking whether the MOOD around a team has shifted)
+Not news — mood. You're reading what fans are saying right now and comparing it to how the
+room felt last time you checked, deciding whether the vibe has MOVED enough to text someone
+about, unprompted.
+
+You'll get: the person's team, the fan sentiment right now (Reddit + Bluesky — sentiment,
+NOT fact, and some of it may be stale, weigh it), the mood you logged last time (or "first
+time"), and things you recently told them (don't repeat).
+
+Return STRICT JSON, nothing else:
+{
+  "mood": "one line capturing the vibe RIGHT NOW (always fill this in, even if unchanged)",
+  "shifted": true | false,
+  "notable": true | false,
+  "message": "the text you'd send, your voice — or \"\" if not notable"
+}
+Rules:
+- "mood" is your read of the current vibe in a short phrase — this gets stored as the new
+  baseline, so make it honest and specific.
+- "shifted" is true only if the mood MEANINGFULLY moved from last time (souring, hype
+  building, panic setting in, turning a corner) — not day-to-day noise or the same vibe
+  reworded.
+- "notable" is true only if that shift is something a fan actually wants an unprompted text
+  about. A steady mood, or a tiny wobble, is notable: false.
+- "message" (only if notable): SHORT, your voice, dry and human, lowercase-friendly. Name the
+  shift and give YOUR read — you are NOT a hive-mind mirror. Don't state scores/records; if a
+  post claims a transaction, that's for a news check, not this.
+- Output ONLY the JSON object.
+"""
+
+
+def _vibe_judge(uid, team, league, sentiment_text, prior_mood):
+    context = {
+        "person_follows": f"{team} ({league.upper()})",
+        "fan_sentiment_right_now": sentiment_text,
+        "the_mood_last_time_you_checked": prior_mood or "(first time checking)",
+        "things_you_recently_told_them": _recent_texts(uid) or ["(nothing yet)"],
+    }
+    system_prompt = _dateline() + _load_persona() + "\n" + SENTIMENT_ADDENDUM
+    cmd = [
+        GRAFF, "-p", "--yolo", "--model", MODEL,
+        "--append-system-prompt", system_prompt,
+        "--max-tool-calls", "0",  # the sentiment is already in the prompt
+        "--no-telemetry",
+        "Read the vibe and decide if it shifted:\n" + json.dumps(context, indent=2),
+    ]
+    try:
+        out = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True, timeout=TURN_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        print("[vibe] judge timed out", file=sys.stderr)
+        return None
+    if out.returncode != 0:
+        print(f"[vibe] graff error: {(out.stderr or '').strip()[-200:]}", file=sys.stderr)
+        return None
+    return _extract_json(out.stdout)
+
+
+def sentiment_sweep(dry_run=False):
+    """Ping on a mood shift around a user's team. Same anti-annoyance rails as the news pass
+    (per-user cap + the cross-pass min-gap throttle), and a cold-start that baselines the mood
+    silently so a new team never gets blasted."""
+    users = memory.active_users()
+    if not users:
+        print("[vibe] no active users.", file=sys.stderr)
+        return
+    total_sent = 0
+    for uid, user in users:
+        chat_id = user.get("chat_id")
+        sent_this_user = 0
+        for tinfo in memory.user_teams(user):
+            league, team = tinfo["league"], tinfo["team"]
+            if not (league and team):
+                continue
+            scope = f"{league}:{team.lower()}"
+            try:
+                vibe = fan.fan_sentiment(league, team)
+            except Exception as e:  # noqa: BLE001 — one team's sentiment failing isn't fatal
+                print(f"[vibe] sentiment fetch failed for {team}: {e}", file=sys.stderr)
+                continue
+            prior = memory.get_mood(scope)
+            prior_mood = prior.get("mood") if prior else None
+            decision = _vibe_judge(uid, team, league, vibe, prior_mood)
+            if not decision:
+                continue
+            mood = (decision.get("mood") or "").strip()
+            if mood and not dry_run:
+                memory.set_mood(scope, mood)
+            # Cold start: nothing to compare against yet, so baseline silently, never ping.
+            if prior_mood is None:
+                print(f"[vibe] baselined {scope}: {mood[:60]}", file=sys.stderr)
+                continue
+            msg = (decision.get("message") or "").strip()
+            if not (decision.get("shifted") and decision.get("notable") and msg):
+                continue
+            if sent_this_user >= MAX_PER_USER:
+                continue
+            key = "vibe:" + memory._slug(mood)[:48]
+            if memory.already_sent(uid, key):
+                continue
+            if not memory.proactive_allowed(uid, PROACTIVE_MIN_GAP):
+                print(f"[vibe] {uid} throttled (min gap); mood saved, no ping.", file=sys.stderr)
+                continue
+            print(f"[vibe] -> {team} to {uid}: {msg}", file=sys.stderr)
+            if not dry_run:
+                _tg_send(chat_id, msg)
+            memory.log_sent(uid, key, msg)
+            memory.touch_proactive(uid)
+            sent_this_user += 1
+            total_sent += 1
+    print(f"[vibe] pass done. mood pings: {total_sent}.", file=sys.stderr)
+
+
+# ---------------------------------------------------------------------------
 # DIGEST: distill what ronin knows about a PERSON from their recent chats.
 # ---------------------------------------------------------------------------
 DIGEST_MIN_USER_TURNS = 3
@@ -599,6 +720,8 @@ if __name__ == "__main__":
         grade(dry_run="--dry" in sys.argv)
     elif "--digest" in sys.argv:
         digest(dry_run="--dry" in sys.argv)
+    elif "--sentiment" in sys.argv:
+        sentiment_sweep(dry_run="--dry" in sys.argv)
     elif "--reflect" in sys.argv:
         reflect(dry_run="--dry" in sys.argv)
     else:
