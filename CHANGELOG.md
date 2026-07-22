@@ -42,6 +42,14 @@ extraction: no per-message cost, and no risk of digest JSON leaking into a reply
 **Scheduling (`telegram_bot.py`).** `digest` runs every ~4h, `grade` and `reflect` ~daily,
 each cheap-when-idle (all gate on new work).
 
+**Date grounding for the roam passes (spot-check fix).** Verifying the judge's deadlines
+caught that the roam passes — unlike the chat path — had no idea what year it was, so a
+"next NBA season" take got a deadline of June *2026* (already past) instead of 2027. A past
+deadline would make `grade()` churn the take weekly forever. Fixed by injecting today's date
+into the judge / grade / reflect prompts (`_dateline`), with a guard in `run_once` that drops
+an already-past deadline outright. The WNBA in-season take already dated correctly; dedup and
+`resolves_when` quality checked out.
+
 ### Follow-ups to a proactive ping now land in the right context (2026-07-21)
 Reported from a real chat: ronin texts unprompted (Curry's HOF exhibit), the user replies
 "who's funding it? that's dope", and ronin answers about the *World Cup*. It didn't drop

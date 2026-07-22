@@ -96,8 +96,10 @@ Rules:
   instead of starting a duplicate. Only mint a new slug for a genuinely new storyline.
 - "resolves_when" + "deadline": a take is a prediction you can be graded on. Say plainly
   what future result would settle it (e.g. "OKC eliminated before the conference finals, or
-  wins the title") and the YYYYMMDD by which you'd expect to know. If it's a timeless
-  opinion with no checkable outcome, use "" and null — don't force one.
+  wins the title") and the YYYYMMDD by which you'd expect to know. The deadline is a REAL
+  future date (see today's date above) — for an outcome that lands at the end of a season or
+  tournament, use that event's actual date in the RIGHT year, never one already past. If it's
+  a timeless opinion with no checkable outcome, use "" and null — don't force one.
 - Output ONLY the JSON object. No preamble, no code fence.
 """
 
@@ -141,6 +143,20 @@ Rules:
 def _load_persona():
     with open(os.path.join(ROOT, "persona.md"), encoding="utf-8") as f:
         return f.read()
+
+
+def _dateline():
+    """Ground the roam passes in the real date. Without it the judge has no idea what year
+    it is and sets deadlines by guessing — it put a 'next NBA season' take's deadline in the
+    PAST (June 2026 instead of 2027), which would churn the grader forever."""
+    today = datetime.date.today()
+    return (
+        "## Right now (ground every date in this)\n"
+        f"Today is {today:%A, %B %-d, %Y} ({today:%Y%m%d}).\n"
+        "Any deadline you set MUST come AFTER today and use the correct year. Picture when the "
+        "outcome actually resolves: a take about next season is settled at the END of next "
+        f"season, which is a date well past {today:%Y%m%d} — never one that has already gone by.\n\n"
+    )
 
 
 def _existing_take(subject_team):
@@ -190,7 +206,7 @@ def _judge(uid, team, league, headline):
         "your_existing_take_topics_reuse_the_slug_if_it_fits": existing or ["(none yet)"],
         "things_you_recently_told_them": _recent_texts(uid) or ["(nothing yet)"],
     }
-    system_prompt = _load_persona() + "\n" + ROAM_ADDENDUM
+    system_prompt = _dateline() + _load_persona() + "\n" + ROAM_ADDENDUM
     cmd = [
         GRAFF, "-p", "--yolo",
         "--model", MODEL,
@@ -272,6 +288,14 @@ def run_once(dry_run=False):
                         dl = int(dl) if dl else None
                     except (TypeError, ValueError):
                         dl = None
+                    # A fresh take can't have already-resolved: a past deadline means the
+                    # model slipped the year (it did — "next season" -> a June already gone).
+                    # Drop it rather than create a take that churns the grader forever;
+                    # better ungraded than graded on a season that hasn't happened.
+                    if dl is not None and dl <= memory._today_int():
+                        print(f"[roam] dropped past deadline {dl} on '{take.get('subject')}'",
+                              file=sys.stderr)
+                        dl = None
                     memory.upsert_take(
                         take["subject"], take.get("stance", ""), take.get("confidence", 0.5),
                         take.get("reasoning", ""), evidence=[h["key"]],
@@ -342,7 +366,7 @@ def reflect(dry_run=False):
         + "\n\nYOUR CURRENT TAKES:\n" + ("\n".join(takes) or "(none yet)")
         + "\n\nYOUR CURRENT ALLEGIANCES:\n" + ("\n".join(aff) or "(none yet — form some)")
     )
-    system_prompt = _load_persona() + "\n" + REFLECT_ADDENDUM
+    system_prompt = _dateline() + _load_persona() + "\n" + REFLECT_ADDENDUM
     cmd = [
         GRAFF, "-p", "--yolo", "--model", MODEL,
         "--append-system-prompt", system_prompt,
@@ -427,7 +451,7 @@ def _grade_one(take):
     }
     cmd = [
         GRAFF, "-p", "--yolo", "--model", MODEL,
-        "--append-system-prompt", _load_persona() + "\n" + GRADE_ADDENDUM,
+        "--append-system-prompt", _dateline() + _load_persona() + "\n" + GRADE_ADDENDUM,
         "--max-tool-calls", "6",  # it needs the sports tools to check reality
         "--no-telemetry",
         "Grade this old take of yours against what really happened:\n" + json.dumps(context, indent=2),

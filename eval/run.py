@@ -317,6 +317,18 @@ def _check_roam_retry(res):
         roam._judge = boom
         roam.run_once(dry_run=True)                      # handled items aren't re-judged
         res.check("data", "a judged headline is never re-judged or re-sent", True)
+
+        # A take whose judge slipped the year (deadline already past) forms WITHOUT a
+        # deadline, rather than churning the grader on a season that hasn't happened.
+        heads.append({"key": "r3", "headline": "C", "desc": "d"})
+        past = memory._today_int() - 100  # ~a year ago
+        roam._judge = lambda *a: {"notable": False, "message": "", "take": {
+            "topic": "suns-ceiling", "subject": "Suns ceiling", "stance": "contender",
+            "confidence": 0.6, "resolves_when": "next season playoff result", "deadline": past}}
+        roam.run_once(dry_run=True)
+        suns = [t for t in memory.get_takes() if t["topic"] == "suns-ceiling"]
+        res.check("data", "a past deadline is dropped, not left to churn the grader",
+                  bool(suns) and suns[0]["deadline"] is None)
     except AssertionError as e:
         res.check("data", "a judged headline is never re-judged or re-sent", False, str(e))
     finally:
