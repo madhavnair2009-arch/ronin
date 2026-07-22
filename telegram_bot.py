@@ -129,13 +129,17 @@ def _handle_command(chat_id, sender, text):
     return False
 
 
-# How often (in roam ticks) ronin re-reflects on its allegiances. Reflection is the
-# slow "who do I root for" loop; news roaming is the fast one. Default: ~daily at 30-min ticks.
+# The slow background loops, counted in roam ticks (news roaming is the fast one).
+# Reflection = "who do I root for", grading = "was I right", digest = "who is this person".
+# All default to ~daily at 30-min ticks; they're cheap-when-idle (each gates on new work).
 REFLECT_EVERY = int(os.environ.get("ROAM_REFLECT_EVERY", "48"))
+GRADE_EVERY = int(os.environ.get("ROAM_GRADE_EVERY", "48"))
+DIGEST_EVERY = int(os.environ.get("ROAM_DIGEST_EVERY", "8"))  # ~4h: keep memory of people fresher
 
 
 def _roam_scheduler():
-    print(f"[roam] scheduler on, every {ROAM_INTERVAL}s (reflect every {REFLECT_EVERY} ticks)",
+    print(f"[roam] scheduler on, every {ROAM_INTERVAL}s "
+          f"(reflect/{REFLECT_EVERY}, grade/{GRADE_EVERY}, digest/{DIGEST_EVERY} ticks)",
           file=sys.stderr)
     # Cold start: if this fresh machine has no allegiances yet, form them once now so
     # ronin has a personality before the first daily reflection comes around.
@@ -150,6 +154,10 @@ def _roam_scheduler():
         tick += 1
         try:
             roam.run_once()
+            if tick % DIGEST_EVERY == 0:
+                roam.digest()
+            if tick % GRADE_EVERY == 0:
+                roam.grade()
             if tick % REFLECT_EVERY == 0:
                 roam.reflect()
         except Exception as e:  # noqa: BLE001 — never let roam kill the bot

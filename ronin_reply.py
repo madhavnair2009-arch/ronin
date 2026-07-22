@@ -62,13 +62,28 @@ def _load_system_prompt(sender_id=None):
         "only see today's slate, you can pull whatever day they asked for.\n\n"
     )
     persona = dateline + persona
-    # Its beliefs: the LIVING takes the roam loop revises (not the frozen seed file).
+    # Its beliefs: the LIVING takes the roam loop revises (not the frozen seed file). Only
+    # the still-open ones are standing beliefs; graded ones become the track record below.
     takes = memory.get_takes()
-    if takes:
+    open_takes = [t for t in takes if t.get("status", "open") == "open"]
+    if open_takes:
         lines = ["\n## Your standing takes right now (you formed/revised these — own them)"]
-        for t in takes:
+        for t in open_takes:
             lines.append(f"- **{t['subject']}** (conf {t.get('confidence', '?')}): {t['stance']}")
         persona += "\n" + "\n".join(lines) + "\n"
+    # Its track record: takes the grader settled against reality. This is earned conviction —
+    # ronin can flex a good call or eat crow on a bad one, but only from what's really here.
+    rec = memory.get_record()
+    if rec["accuracy"] is not None:
+        graded = sorted((t for t in takes if t.get("status") in ("hit", "miss")),
+                        key=lambda t: t.get("graded_at", 0), reverse=True)
+        line = ["\n## Your track record (real and earned — reference it, never inflate it)",
+                f"Graded on {rec['hits'] + rec['misses']} of your calls so far: "
+                f"{rec['hits']} right, {rec['misses']} wrong."]
+        for t in graded[:3]:
+            verb = "nailed" if t["status"] == "hit" else "whiffed on"
+            line.append(f"- you {verb} \"{t['subject']}\"" + (f" ({t['outcome']})" if t.get("outcome") else ""))
+        persona += "\n".join(line) + "\n"
     # Its allegiances: the teams ronin roots for / against (formed by the reflection pass).
     loves, dislikes = memory.top_affinities()
     if loves or dislikes:
@@ -99,6 +114,20 @@ def _load_system_prompt(sender_id=None):
                          "have their team for that one yet and ask who it is, don't act clueless "
                          "about the teams you DO have.")
             persona += "\n".join(block) + "\n"
+        # What you remember about THEM (from the roam digest of your past chats): their own
+        # opinions, running bits, the arguments you keep having. Lets ronin talk like it
+        # actually knows this person instead of meeting them fresh every time.
+        prof = memory.get_profile(sender_id)
+        facts = []
+        for label, key in (("opinions they hold", "takes_you_hold"),
+                           ("their running bits", "bits"),
+                           ("you two go back and forth on", "running_arguments")):
+            vals = prof.get(key) or []
+            if vals:
+                facts.append(f"- {label}: " + "; ".join(vals))
+        if facts:
+            persona += ("\n## What you remember about them (talk like you know them; bring these "
+                        "up naturally, don't recite them)\n" + "\n".join(facts) + "\n")
         # What you texted them out of the blue. The roam loop sends these and they DON'T
         # land in this chat thread, so without this a reply to one ("who's funding it?")
         # looks like it came from nowhere and you anchor on the wrong, older topic.

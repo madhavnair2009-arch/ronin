@@ -5,6 +5,43 @@ architecture and `README.md` for how to run it.
 
 ---
 
+### Calibration + take de-dup, and memory of the person (2026-07-21)
+Two design-doc chapters at once: takes that get graded so conviction is earned, and a
+per-user profile so ronin talks like it knows you. Harness 48/48 (both new behaviors 4/4
+on a stability run).
+
+**Take de-dup (`memory.py`).** Identity of a take is now a `topic` slug, not the raw
+subject string. The roam judge authored a fresh subject every pass ("Curry legacy" ->
+"Steph's HOF case"), so one belief forked into many. `take_key()` matches on the topic
+slug (falling back to the subject slug for legacy takes), and the judge is fed its existing
+topics and told to reuse the slug when the storyline matches. A reworded subject now
+revises the belief and keeps its history.
+
+**Calibration (`memory.py` + `roam.py`).** A take now carries `resolves_when` (the real
+outcome that settles it) and a `deadline`, captured at formation. A new `grade()` roam pass
+takes the overdue open takes, gives the model the sports tools to check what actually
+happened, and settles each: a **hit** bumps confidence toward 1, a **miss** cuts it, both
+roll into a running record (`calibration.json`). Can't-tell-yet takes are deferred, not
+force-graded. The chat prompt now shows only *open* takes as standing beliefs and adds a
+**track record** block ("graded on N of your calls: X right, Y wrong; you nailed …, whiffed
+on …") so ronin flexes or eats crow from something real. Revising a graded take reopens it.
+
+**Affinity decay retires stale allegiances (`memory.py` + `roam.py`).** The France bug:
+`wc:FRA -0.30 "rolling into the semis"` sat in `/data` long after France was knocked out,
+because reflection just stopped mentioning it. `reflect()` now fades any allegiance it
+*didn't* reaffirm this pass — but only within the leagues it actually looked at — so a weak
+stale one drops in a single pass while a deep grudge fades over a few.
+
+**Relationship memory via digest (`memory.py`, `roam.py`, `ronin_reply.py`).** A new
+`digest()` roam pass reads each user's recent chat transcript and distills durable facts
+about *them* — the opinions they hold, their running bits, the arguments you two keep having
+— into a capped per-user profile, gated so an unchanged conversation isn't re-digested. The
+chat prompt feeds those back so ronin brings them up naturally. Chosen over per-reply
+extraction: no per-message cost, and no risk of digest JSON leaking into a reply.
+
+**Scheduling (`telegram_bot.py`).** `digest` runs every ~4h, `grade` and `reflect` ~daily,
+each cheap-when-idle (all gate on new work).
+
 ### Follow-ups to a proactive ping now land in the right context (2026-07-21)
 Reported from a real chat: ronin texts unprompted (Curry's HOF exhibit), the user replies
 "who's funding it? that's dope", and ronin answers about the *World Cup*. It didn't drop

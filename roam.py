@@ -71,7 +71,12 @@ Return STRICT JSON, nothing else, in this exact shape:
 {
   "notable": true | false,
   "message": "the text you'd send them, in your voice — or \"\" if not notable",
-  "take": { "subject": "...", "stance": "...", "confidence": 0.0-1.0, "reasoning": "..." } | null
+  "take": {
+    "topic": "short-kebab-slug",
+    "subject": "...", "stance": "...", "confidence": 0.0-1.0, "reasoning": "...",
+    "resolves_when": "the real outcome that will later prove this right or wrong",
+    "deadline": "YYYYMMDD"
+  } | null
 }
 
 Rules:
@@ -84,7 +89,15 @@ Rules:
   notification. Reference the actual news; don't state scores/records you weren't given.
 - "take": if this news forms or MOVES a belief, return the updated take (revise your prior
   stance if you were given one — it's fine to say your confidence shifted). If it doesn't
-  touch a belief, return null. Keep "subject" stable across updates to the same storyline.
+  touch a belief, return null.
+- "topic" is the STABLE identity of the storyline — same slug every time you revisit it
+  (e.g. "curry-legacy", "okc-title-odds"). If this news is about a storyline you already
+  have a take on (see the topics you'll be given), REUSE that exact topic so you revise it
+  instead of starting a duplicate. Only mint a new slug for a genuinely new storyline.
+- "resolves_when" + "deadline": a take is a prediction you can be graded on. Say plainly
+  what future result would settle it (e.g. "OKC eliminated before the conference finals, or
+  wins the title") and the YYYYMMDD by which you'd expect to know. If it's a timeless
+  opinion with no checkable outcome, use "" and null — don't force one.
 - Output ONLY the JSON object. No preamble, no code fence.
 """
 
@@ -168,10 +181,13 @@ def _judge(uid, team, league, headline):
     prior_str = "none"
     if prior:
         prior_str = f"{prior['subject']} — {prior['stance']} (confidence {prior.get('confidence')})"
+    existing = [f"{t.get('topic') or memory._slug(t['subject'])} — {t['subject']}"
+                for t in memory.get_takes()]
     context = {
         "person_follows": f"{team} ({league.upper()})",
         "new_news_item": f"{headline['headline']} — {headline['desc']}".strip(" —"),
         "your_current_take_on_this_storyline": prior_str,
+        "your_existing_take_topics_reuse_the_slug_if_it_fits": existing or ["(none yet)"],
         "things_you_recently_told_them": _recent_texts(uid) or ["(nothing yet)"],
     }
     system_prompt = _load_persona() + "\n" + ROAM_ADDENDUM
@@ -251,9 +267,16 @@ def run_once(dry_run=False):
                 memory.mark_seen(scope, [h["key"]])
                 take = decision.get("take")
                 if isinstance(take, dict) and take.get("subject"):
+                    dl = take.get("deadline")
+                    try:
+                        dl = int(dl) if dl else None
+                    except (TypeError, ValueError):
+                        dl = None
                     memory.upsert_take(
                         take["subject"], take.get("stance", ""), take.get("confidence", 0.5),
                         take.get("reasoning", ""), evidence=[h["key"]],
+                        topic=take.get("topic"), resolves_when=take.get("resolves_when"),
+                        deadline=dl,
                     )
                 msg = (decision.get("message") or "").strip()
                 if decision.get("notable") and msg and sent_this_user < MAX_PER_USER:
@@ -340,6 +363,7 @@ def reflect(dry_run=False):
         return
     allowed = set(leagues)
     n = 0
+    reaffirmed = set()
     for a in data["affinities"]:
         if not isinstance(a, dict) or not a.get("abbrev"):
             continue
@@ -351,17 +375,207 @@ def reflect(dry_run=False):
             continue
         print(f"[reflect] {a.get('team')} ({a.get('league')}): "
               f"{a.get('score')} — {a.get('stance')}", file=sys.stderr)
+        reaffirmed.add(f"{a.get('league','').lower()}:{a.get('abbrev','').upper()}")
         if not dry_run:
             memory.upsert_affinity(
                 a.get("team", ""), a.get("league", ""), a.get("abbrev", ""),
                 a.get("score", 0), a.get("stance", ""),
             )
         n += 1
-    print(f"[reflect] updated {n} allegiance(s).", file=sys.stderr)
+    # Fade allegiances this pass didn't reaffirm, but only in the leagues we actually
+    # looked at. This is what finally retires a stale allegiance (the World Cup grudge that
+    # outlived the team's elimination) instead of leaving it to editorialize forever.
+    dropped = memory.decay_affinities(leagues, reaffirmed) if not dry_run else []
+    if dropped:
+        print(f"[reflect] retired stale allegiance(s): {', '.join(dropped)}", file=sys.stderr)
+    print(f"[reflect] updated {n} allegiance(s), retired {len(dropped)}.", file=sys.stderr)
+
+
+# ---------------------------------------------------------------------------
+# GRADE: settle old takes against reality so being right earns conviction.
+# ---------------------------------------------------------------------------
+GRADE_ADDENDUM = """
+## GRADE MODE (you are checking whether an old prediction of yours came true)
+You made a call a while ago. Now you find out if you were right. Use the sports tools to
+look up the REAL current standings / champion / results — never guess the outcome.
+
+You'll get: your old take, and what you said would settle it (resolves_when). Check reality
+with your tools, then judge honestly. Being wrong is fine and useful; don't grade yourself
+generously.
+
+Return STRICT JSON, nothing else:
+{
+  "resolved": true | false,
+  "verdict": "hit" | "miss",
+  "note": "one short line, in your voice, on what actually happened"
+}
+- "resolved": true only if reality now clearly settles the take one way or the other. If the
+  season/event hasn't reached the point that would decide it yet, return false (verdict is
+  then ignored) and you'll check again later.
+- "verdict": "hit" if you were right, "miss" if you were wrong. Judge against what you
+  actually claimed, not a charitable reading.
+- Output ONLY the JSON object.
+"""
+
+
+def _grade_one(take):
+    context = {
+        "your_take_subject": take.get("subject", ""),
+        "your_stance": take.get("stance", ""),
+        "resolves_when": take.get("resolves_when") or "(none recorded — judge from the stance)",
+        "you_made_this_call_on": time.strftime("%Y-%m-%d", time.localtime(take.get("formed_at", 0))),
+    }
+    cmd = [
+        GRAFF, "-p", "--yolo", "--model", MODEL,
+        "--append-system-prompt", _load_persona() + "\n" + GRADE_ADDENDUM,
+        "--max-tool-calls", "6",  # it needs the sports tools to check reality
+        "--no-telemetry",
+        "Grade this old take of yours against what really happened:\n" + json.dumps(context, indent=2),
+    ]
+    try:
+        out = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True, timeout=TURN_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        print("[grade] timed out", file=sys.stderr)
+        return None
+    if out.returncode != 0:
+        print(f"[grade] graff error: {(out.stderr or '').strip()[-200:]}", file=sys.stderr)
+        return None
+    return _extract_json(out.stdout)
+
+
+def grade(dry_run=False):
+    """Settle overdue takes against reality. A hit earns confidence, a miss cuts it, and both
+    roll into ronin's record — so its conviction is something it's built, not just asserted."""
+    due = memory.takes_due()
+    if not due:
+        print("[grade] nothing due.", file=sys.stderr)
+        return
+    graded = 0
+    for t in due:
+        key = memory.take_key(t)
+        res = _grade_one(t)
+        if not res or not res.get("resolved") or res.get("verdict") not in ("hit", "miss"):
+            # Can't call it yet (or the judge failed): push the deadline out and retry later,
+            # rather than leaving it due every pass or grading it on no information.
+            if not dry_run:
+                memory.defer_take(key)
+            print(f"[grade] {t.get('subject','?')}: not settled yet, deferred", file=sys.stderr)
+            continue
+        note = res.get("note", "")
+        if not dry_run:
+            nc = memory.resolve_take(key, res["verdict"], note)
+        else:
+            nc = None
+        print(f"[grade] {t.get('subject','?')}: {res['verdict'].upper()} "
+              f"(conf->{nc}) — {note}", file=sys.stderr)
+        graded += 1
+    rec = memory.get_record()
+    print(f"[grade] done. settled {graded} this pass. record: "
+          f"{rec['hits']}-{rec['misses']}.", file=sys.stderr)
+
+
+# ---------------------------------------------------------------------------
+# DIGEST: distill what ronin knows about a PERSON from their recent chats.
+# ---------------------------------------------------------------------------
+DIGEST_MIN_USER_TURNS = 3
+
+DIGEST_ADDENDUM = """
+## DIGEST MODE (you're remembering a person, not scores)
+You're skimming your recent chats with ONE person so you remember what makes THEM them next
+time — their opinions, their running jokes, the arguments you two keep having. Not sports
+facts. Facts about the person.
+
+You'll get the recent transcript and what you already remember. Return an updated memory.
+
+Return STRICT JSON, nothing else:
+{
+  "takes_you_hold":     ["short, third-person: an opinion THEY hold, e.g. 'thinks load management ruined the league'"],
+  "bits":               ["a running joke or phrase that's theirs, e.g. 'calls the Lakers the retirement home'"],
+  "running_arguments":  ["a topic you two go back and forth on, e.g. 'Steph vs LeBron GOAT'"]
+}
+Rules:
+- Durable only. Skip one-off factual questions ("who won last night") — those aren't about them.
+- MERGE with what you already remember: keep what still holds, revise what changed, drop what
+  they've clearly moved off. Don't just append.
+- Each item a short phrase, third-person about them. Empty lists are fine. JSON only.
+"""
+
+# Must match ronin_reply._session_name — both address the same graff session file.
+def _session_name(sender_id):
+    safe = re.sub(r"[^A-Za-z0-9_-]", "_", str(sender_id))[:64] or "anon"
+    return f"sess_{safe}"
+
+
+def _session_transcript(uid, max_turns=16):
+    """Recent (role, text) turns from a user's graff session, plus its updated_ms."""
+    path = os.path.join(ROOT, f"{_session_name(uid)}.session.json")
+    try:
+        with open(path, encoding="utf-8") as f:
+            d = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return [], 0
+    out = []
+    for m in d.get("messages", [])[-max_turns:]:
+        c = m.get("content")
+        if isinstance(c, list):
+            c = " ".join(x.get("text", "") if isinstance(x, dict) else str(x) for x in c)
+        c = (c or "").strip()
+        if m.get("role") in ("user", "assistant") and c:
+            out.append((m["role"], c))
+    return out, d.get("updated_ms", 0)
+
+
+def _digest_one(uid, profile, turns):
+    context = {
+        "recent_chat": [f"{r}: {c}" for r, c in turns],
+        "what_you_already_remember": {k: profile.get(k, []) for k in memory.PROFILE_CAPS},
+    }
+    cmd = [
+        GRAFF, "-p", "--yolo", "--model", MODEL,
+        "--append-system-prompt", _load_persona() + "\n" + DIGEST_ADDENDUM,
+        "--max-tool-calls", "0",  # pure distillation; no facts to look up
+        "--no-telemetry",
+        "Update what you remember about this person:\n" + json.dumps(context, indent=2),
+    ]
+    try:
+        out = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True, timeout=TURN_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        print("[digest] timed out", file=sys.stderr)
+        return None
+    if out.returncode != 0:
+        print(f"[digest] graff error: {(out.stderr or '').strip()[-200:]}", file=sys.stderr)
+        return None
+    return _extract_json(out.stdout)
+
+
+def digest(dry_run=False):
+    """Refresh ronin's memory of each active user from their recent chats. Gated: skip a
+    conversation that hasn't moved since we last read it, so we don't pay to re-digest."""
+    updated = 0
+    for uid, u in memory.active_users():
+        turns, updated_ms = _session_transcript(uid)
+        profile = memory.get_profile(uid)
+        if updated_ms and updated_ms <= profile.get("digested_ms", 0):
+            continue  # nothing new said since the last digest
+        if sum(1 for r, _ in turns if r == "user") < DIGEST_MIN_USER_TURNS:
+            continue  # too little to bother
+        data = _digest_one(uid, profile, turns)
+        if not isinstance(data, dict):
+            continue
+        n = sum(len(data.get(k) or []) for k in memory.PROFILE_CAPS)
+        print(f"[digest] {uid}: {n} remembered detail(s)", file=sys.stderr)
+        if not dry_run:
+            memory.set_profile(uid, data, digested_ms=updated_ms)
+        updated += 1
+    print(f"[digest] done. refreshed {updated} profile(s).", file=sys.stderr)
 
 
 if __name__ == "__main__":
-    if "--reflect" in sys.argv:
+    if "--grade" in sys.argv:
+        grade(dry_run="--dry" in sys.argv)
+    elif "--digest" in sys.argv:
+        digest(dry_run="--dry" in sys.argv)
+    elif "--reflect" in sys.argv:
         reflect(dry_run="--dry" in sys.argv)
     else:
         run_once(dry_run="--dry" in sys.argv)

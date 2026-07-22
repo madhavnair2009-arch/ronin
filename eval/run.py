@@ -212,7 +212,80 @@ def run_data(res):
               "HOF exhibit" in sp and "unprompted" in sp and "3h ago" in sp
               and "ancient news" not in sp)
 
+    _check_calibration(res)
+    _check_relationship_memory(res)
     _check_roam_retry(res)
+
+
+def _check_calibration(res):
+    """Take de-dup + grading: a storyline is one revisable belief, and being right earns
+    conviction while being wrong costs it."""
+    # de-dup: a reworded subject on the same topic revises instead of forking
+    memory.upsert_take("Curry legacy", "first-ballot HOF", 0.8, topic="curry-legacy")
+    memory.upsert_take("Steph's HOF case", "museum piece", 0.85, topic="curry-legacy")
+    dup = [t for t in memory.get_takes() if t["topic"] == "curry-legacy"]
+    res.check("data", "take de-dup: same topic revises, doesn't fork",
+              len(dup) == 1 and dup[0]["subject"] == "Steph's HOF case" and len(dup[0]["history"]) == 1)
+    # legacy take with no topic still matches on its subject slug
+    memory.upsert_take("panic takes", "age badly", 0.8)
+    memory.upsert_take("Panic Takes", "still true", 0.82)
+    res.check("data", "legacy no-topic take matches on subject slug",
+              len([t for t in memory.get_takes() if t["topic"] == "panic-takes"]) == 1)
+
+    # grading: only overdue open takes are due; a miss cuts confidence, a hit raises it
+    memory.upsert_take("OKC grind", "fold in a series", 0.7, topic="okc-grind",
+                       deadline=20250101, resolves_when="OKC out or champ")
+    memory.upsert_take("timeless", "no checkable outcome", 0.8, topic="timeless")  # no deadline
+    due_keys = {memory.take_key(t) for t in memory.takes_due(today=20260101)}
+    res.check("data", "takes_due lists overdue takes, skips deadline-less ones",
+              "okc-grind" in due_keys and "timeless" not in due_keys)
+    miss_conf = memory.resolve_take("okc-grind", "miss", "OKC won it all")
+    hit_conf = memory.resolve_take("curry-legacy", "hit", "inducted")
+    res.check("data", "a miss cuts confidence, a hit raises it",
+              miss_conf < 0.7 and hit_conf > 0.85)
+    rec = memory.get_record()
+    res.check("data", "calibration record tallies hits/misses + accuracy",
+              rec["hits"] == 1 and rec["misses"] == 1 and rec["accuracy"] == 0.5)
+    res.check("data", "a graded take leaves the standing beliefs, joins the record",
+              all(t["topic"] not in ("okc-grind", "curry-legacy")
+                  for t in memory.takes_due(today=20260101)))
+    # revising a graded take reopens it (the new stance is untested)
+    memory.upsert_take("OKC grind", "ok they proved me wrong", 0.6, topic="okc-grind")
+    res.check("data", "revising a graded take reopens it for grading",
+              [t for t in memory.get_takes() if t["topic"] == "okc-grind"][0]["status"] == "open")
+
+    # affinity decay: a stale, unreaffirmed allegiance fades out (the France bug)
+    memory.upsert_affinity("France", "wc", "FRA", -0.30, "rolling into the semis")
+    memory.upsert_affinity("Spain", "wc", "ESP", -0.30, "the machine")
+    dropped = memory.decay_affinities(["wc"], {"wc:ESP"})
+    keys = {a["key"] for a in memory.get_affinities()}
+    res.check("data", "affinity decay retires the stale, unreaffirmed France",
+              "wc:FRA" not in keys and "wc:ESP" in keys and "wc:FRA" in dropped)
+
+    # the track record surfaces in the chat prompt; graded takes drop out of standing beliefs
+    import ronin_reply
+    sp = ronin_reply._load_system_prompt(None)
+    res.check("data", "chat prompt shows the earned track record, hides graded takes",
+              "track record" in sp and "1 right, 1 wrong" in sp
+              and "Steph's HOF case" not in sp.split("track record")[0].split("standing takes")[-1])
+
+
+def _check_relationship_memory(res):
+    """The digest builds a per-user profile; the chat prompt talks like it knows them."""
+    import ronin_reply
+    memory.set_team("mR2", "nba", "Detroit Pistons", "DET", chat_id=1)
+    memory.set_profile("mR2", {
+        "takes_you_hold": ["thinks load management ruined the league"] * 20,  # over cap
+        "bits": ["calls the Lakers the retirement home"],
+        "running_arguments": ["Steph vs LeBron GOAT"]}, digested_ms=5000)
+    prof = memory.get_profile("mR2")
+    res.check("data", "profile lists are capped and store digested_ms",
+              len(prof["takes_you_hold"]) == memory.PROFILE_CAPS["takes_you_hold"]
+              and prof["digested_ms"] == 5000)
+    sp = ronin_reply._load_system_prompt("mR2")
+    res.check("data", "chat prompt surfaces what ronin remembers about them",
+              "load management" in sp and "retirement home" in sp
+              and "Steph vs LeBron" in sp and "remember about them" in sp)
 
 
 def _check_roam_retry(res):
@@ -293,18 +366,23 @@ def run_integration(res):
 # layer 3: behavior (model in the loop — costs API $)
 # ---------------------------------------------------------------------------
 def _seed_clear():
-    """Wipe seeded relationships/affinity so each behavior case starts known."""
+    """Wipe seeded state so each behavior case starts known (takes/calibration too, so a
+    track-record case controls exactly what's been graded)."""
     memory._update("relationships.json", lambda d: d.clear(), {})
     memory._write("affinity.json", [])
+    memory._write("takes.json", [])       # [] (not missing) so it won't re-seed from the flat file
+    memory._write("calibration.json", {})
 
 
 def _run_case(res, name, message, seed=None, must=None, must_not=None, must_any=None,
-              proactive=None):
+              proactive=None, seed_sender=None):
     import ronin_reply
     _seed_clear()
     if seed:
         seed()
     sender = f"eval_{abs(hash(name)) % 10**8}_{int(datetime.datetime.now().timestamp())}"
+    if seed_sender:  # per-user seeding that needs the generated sender id (profile, teams)
+        seed_sender(sender)
     if proactive:  # simulate a roam ping this user is now replying to
         memory.log_sent(sender, "eval_ping", proactive)
     reply = ronin_reply.reply(sender, message)
@@ -382,6 +460,28 @@ def run_behavior(res):
               proactive="curry getting his own HOF exhibit while still active is kinda insane",
               must_any=["curry", "hof", "hall of fame", "exhibit", "hall"],
               must_not=["world cup", "fifa", "host countr"])
+
+    # Calibration: ronin can cite its real, earned track record when asked how its calls look.
+    _run_case(res, "cites its earned track record, not a vibe",
+              "how are your takes holding up this season? you been right?",
+              seed=lambda: (
+                  memory.upsert_take("Spurs rise", "story of the season", 0.85, topic="spurs-rise",
+                                     deadline=20250101),
+                  memory.resolve_take("spurs-rise", "hit", "Spurs made the playoffs"),
+                  memory.upsert_take("OKC grind", "they fold in a series", 0.7, topic="okc-grind",
+                                     deadline=20250101),
+                  memory.resolve_take("okc-grind", "miss", "OKC won the title")),
+              must_any=["spurs", "okc", "right", "wrong", "nailed", "whiff", "1-1", "one right"])
+
+    # Relationship memory: ronin brings up something the digest remembered about them.
+    _run_case(res, "brings up what it remembers about the person",
+              "the lakers just signed another aging star lol",
+              seed_sender=lambda s: (
+                  memory.set_team(s, "nba", "Detroit Pistons", "DET", chat_id=1),
+                  memory.set_profile(s, {"takes_you_hold": ["thinks the Lakers only chase big names"],
+                                         "bits": ["calls the Lakers the retirement home"],
+                                         "running_arguments": []})),
+              must_any=["retirement home", "retirement", "big name", "chase"])
 
 
 def _cleanup():

@@ -20,6 +20,7 @@ goes through an exclusive file lock (fcntl) + atomic replace.
 
 import json
 import os
+import re
 import tempfile
 import threading
 import time
@@ -194,6 +195,35 @@ def proactive_allowed(uid, min_gap_seconds):
     return (time.time() - u.get("last_proactive", 0)) >= min_gap_seconds
 
 
+# What ronin knows about YOU beyond your team: the takes you hold, running bits, and the
+# arguments you two keep having. The roam digest pass distills these from your recent chats;
+# the chat path feeds them back so ronin talks like it actually remembers you.
+PROFILE_CAPS = {"takes_you_hold": 8, "bits": 6, "running_arguments": 5}
+
+
+def get_profile(uid):
+    return (get_user(uid) or {}).get("profile") or {}
+
+
+def set_profile(uid, profile, digested_ms=None):
+    """Replace a user's profile with the digest's output, capping each list so it can't
+    grow without bound. digested_ms marks how current the transcript was, so the next pass
+    can skip a conversation it has already read."""
+    uid = str(uid)
+    clean = {}
+    for field, cap in PROFILE_CAPS.items():
+        vals = profile.get(field) or []
+        if isinstance(vals, list):
+            clean[field] = [str(v).strip() for v in vals if str(v).strip()][:cap]
+    clean["updated_at"] = time.time()
+    if digested_ms is not None:
+        clean["digested_ms"] = digested_ms
+
+    def go(d):
+        d.setdefault(uid, {})["profile"] = clean
+    _update("relationships.json", go, {})
+
+
 # ---------------------------------------------------------------------------
 # Axis: ITS BELIEFS (takes) — revision, not append; keep history
 # ---------------------------------------------------------------------------
@@ -211,10 +241,14 @@ def _seed_takes_from_file():
     for t in seed.get("takes", []):
         out.append({
             "subject": t["subject"],
+            "topic": _slug(t.get("topic") or t["subject"]),
             "stance": t["stance"],
             "confidence": _conf(t.get("confidence")),
             "reasoning": t.get("reasoning", ""),
             "evidence": [],
+            "resolves_when": t.get("resolves_when", ""),
+            "deadline": t.get("deadline"),
+            "status": "open",
             "formed_at": now,
             "updated_at": now,
             "history": [],
@@ -240,20 +274,40 @@ def _conf(value, default=0.5):
         return default
 
 
-def upsert_take(subject, stance, confidence, reasoning="", evidence=None):
-    """Revise an existing take on this subject (pushing the prior stance to history)
-    or form a new one. Match on case-insensitive subject."""
+def _slug(text):
+    """Stable identity for a take's storyline. The roam judge authors the subject fresh
+    every pass ('Curry legacy' one week, 'Steph's HOF case' the next), so matching on the
+    raw subject forks one belief into many. We match on a normalized slug instead — of an
+    explicit topic when given, else the subject. This is the de-dup key."""
+    return re.sub(r"[^a-z0-9]+", "-", (text or "").lower()).strip("-")
+
+
+def take_key(t):
+    """The de-dup identity of a stored take: its topic slug, or the subject slug for
+    legacy takes that predate topics."""
+    return _slug(t.get("topic") or t.get("subject"))
+
+
+def upsert_take(subject, stance, confidence, reasoning="", evidence=None,
+                topic=None, resolves_when=None, deadline=None):
+    """Revise the take for this storyline (pushing the prior stance to history) or form a
+    new one. Identity is the topic slug (falling back to the subject slug), NOT the raw
+    subject string, so a reworded subject revises the belief instead of duplicating it.
+
+    resolves_when / deadline let a take be graded later: what real-world outcome would
+    settle it, and the YYYYMMDD by which to check. A freshly formed take is status 'open'."""
     subject = (subject or "").strip()
     if not subject:
         return
     confidence = _conf(confidence)
+    key = _slug(topic or subject)
     now = time.time()
 
     def go(data):
         if not isinstance(data, list):
             data = []
         for t in data:
-            if t.get("subject", "").strip().lower() == subject.lower():
+            if take_key(t) == key:
                 changed = (stance != t.get("stance")
                            or abs(confidence - _conf(t.get("confidence"), 0.0)) > 1e-9)
                 if changed:
@@ -264,16 +318,29 @@ def upsert_take(subject, stance, confidence, reasoning="", evidence=None):
                     })
                     t["stance"] = stance
                     t["confidence"] = confidence
+                    t["subject"] = subject  # keep the freshest phrasing
                     if reasoning:
                         t["reasoning"] = reasoning
                     t["updated_at"] = now
+                t.setdefault("topic", key)
+                if resolves_when:
+                    t["resolves_when"] = resolves_when
+                if deadline:
+                    t["deadline"] = deadline
+                # A revised take reopens for grading — the new stance hasn't been tested.
+                if changed and t.get("status") in ("hit", "miss"):
+                    t["status"] = "open"
+                    t.pop("graded_at", None)
+                    t.pop("outcome", None)
+                t.setdefault("status", "open")
                 for ev in (evidence or []):
                     if ev not in t.setdefault("evidence", []):
                         t["evidence"].append(ev)
                 return
         data.append({
-            "subject": subject, "stance": stance, "confidence": confidence,
+            "subject": subject, "topic": key, "stance": stance, "confidence": confidence,
             "reasoning": reasoning, "evidence": list(evidence or []),
+            "resolves_when": resolves_when or "", "deadline": deadline, "status": "open",
             "formed_at": now, "updated_at": now, "history": [],
         })
         return data
@@ -286,6 +353,107 @@ def upsert_take(subject, stance, confidence, reasoning="", evidence=None):
             cur = []
         go(cur)
         _write("takes.json", cur)
+
+
+# ---------------------------------------------------------------------------
+# Calibration: grade resolved takes against reality so being RIGHT earns conviction.
+# A take carries resolves_when + a deadline; the roam grade() pass checks overdue ones
+# against live data and calls resolve_take(). Confidence is then earned, not just asserted.
+# ---------------------------------------------------------------------------
+CONF_GAIN = 0.25   # a hit moves confidence this fraction of the way toward 1.0
+CONF_LOSS = 0.40   # a miss cuts it this fraction toward 0.0 (being wrong stings more)
+
+
+def _today_int():
+    return int(time.strftime("%Y%m%d", time.localtime()))
+
+
+def takes_due(today=None):
+    """Open takes whose deadline has arrived — the grader's worklist. Takes with no
+    deadline are never auto-graded (nothing to check them against)."""
+    today = today or _today_int()
+    out = []
+    for t in get_takes():
+        if t.get("status", "open") != "open":
+            continue
+        dl = t.get("deadline")
+        try:
+            if dl and int(dl) <= today:
+                out.append(t)
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def resolve_take(key, verdict, note=""):
+    """Record a graded outcome for a take (verdict 'hit' or 'miss'), move its confidence
+    (up on a hit, down on a miss), and roll it into the running record. Returns the new
+    confidence, or None if the take/verdict was invalid."""
+    key = _slug(key)
+    if verdict not in ("hit", "miss"):
+        return None
+    now = time.time()
+    result = {}
+
+    def go(data):
+        for t in data if isinstance(data, list) else []:
+            if take_key(t) == key:
+                old = _conf(t.get("confidence"))
+                new = old + (1 - old) * CONF_GAIN if verdict == "hit" else old * (1 - CONF_LOSS)
+                t.setdefault("history", []).append({
+                    "stance": t.get("stance"), "confidence": old,
+                    "at": t.get("updated_at", now), "graded": verdict,
+                })
+                t["confidence"] = round(_conf(new), 3)
+                t["status"] = verdict
+                t["graded_at"] = now
+                t["outcome"] = note
+                t["updated_at"] = now
+                result["conf"] = t["confidence"]
+                result["subject"] = t.get("subject", "")
+                return
+    with _FileLock():
+        cur = _read("takes.json", None)
+        if cur is None:
+            cur = _seed_takes_from_file()
+        go(cur)
+        _write("takes.json", cur)
+    if "conf" not in result:
+        return None
+
+    def rec(d):
+        d.setdefault("hits", 0)
+        d.setdefault("misses", 0)
+        d["hits" if verdict == "hit" else "misses"] += 1
+        d.setdefault("log", []).append(
+            {"key": key, "subject": result["subject"], "verdict": verdict,
+             "note": note, "at": now})
+        d["log"] = d["log"][-100:]
+    _update("calibration.json", rec, {})
+    return result["conf"]
+
+
+def defer_take(key, days=7):
+    """Push a take's deadline out — for when the grader can't yet tell if it resolved."""
+    key = _slug(key)
+    new_dl = int(time.strftime("%Y%m%d", time.localtime(time.time() + days * 86400)))
+
+    def go(data):
+        for t in data if isinstance(data, list) else []:
+            if take_key(t) == key:
+                t["deadline"] = new_dl
+                return
+    _update("takes.json", go, [])
+
+
+def get_record():
+    """Running calibration record: {hits, misses, accuracy, log}. accuracy is None until
+    at least one take has been graded."""
+    d = _read("calibration.json", {})
+    h, m = d.get("hits", 0), d.get("misses", 0)
+    total = h + m
+    return {"hits": h, "misses": m, "log": d.get("log", []),
+            "accuracy": (h / total) if total else None}
 
 
 # ---------------------------------------------------------------------------
@@ -346,6 +514,38 @@ def upsert_affinity(team, league, abbrev, score, stance, reasons=None, evidence=
             cur = []
         go(cur)
         _write("affinity.json", cur)
+
+
+def decay_affinities(leagues, reaffirmed_keys, factor=0.5, floor=0.2):
+    """After a reflection pass, fade allegiances the pass DIDN'T reaffirm — but only within
+    the leagues it actually looked at (don't touch a league it never fetched). This is what
+    retires a stale allegiance: France sat at -0.30 'rolling into the semis' long after it
+    was knocked out, because reflection simply stopped mentioning it. Now an unmentioned
+    team decays toward zero each pass and drops out once it falls below the floor."""
+    leagues = {(lg or "").lower() for lg in leagues}
+    reaffirmed = {k for k in reaffirmed_keys}
+    dropped = []
+
+    def go(data):
+        if not isinstance(data, list):
+            return
+        kept = []
+        for a in data:
+            if a.get("league") in leagues and a.get("key") not in reaffirmed:
+                faded = round(float(a.get("score", 0)) * factor, 3)
+                if abs(faded) < floor:
+                    dropped.append(a.get("key"))
+                    continue  # retired: too weak to hold onto
+                a.setdefault("history", []).append({
+                    "score": a.get("score"), "stance": a.get("stance"),
+                    "at": a.get("updated_at", time.time()), "decayed": True,
+                })
+                a["score"] = faded
+                a["updated_at"] = time.time()
+            kept.append(a)
+        data[:] = kept
+    _update("affinity.json", go, [])
+    return dropped
 
 
 def top_affinities(n=3, threshold=0.15, max_out=4):
