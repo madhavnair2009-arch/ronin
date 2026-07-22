@@ -246,23 +246,42 @@ def _check_web_parser(res):
     res.check("data", "web search is SSRF-safe: single fixed host, user text only in query",
               web.SERP.startswith("https://html.duckduckgo.com/") and web.SERP.endswith("q="))
 
-    # reddit sentiment: league->subreddit mapping + listing parse (network stubbed)
+    # reddit sentiment: league->subreddit mapping, plus both tiers (network stubbed)
     from mcp import reddit
     res.check("data", "reddit maps leagues to subreddits (soccer funnels, nba default)",
               reddit._sub_for("nba") == "nba" and reddit._sub_for("mlb") == "baseball"
               and reddit._sub_for("ucl") == "soccer" and reddit._sub_for("xyz") == "nba")
+
+    # Tier 1 (creds present): OAuth listing parse — drops stickied, ranks by score.
     sample = [{"title": "[Woj] big trade", "score": 4200, "num_comments": 900, "stickied": False},
               {"title": "Daily Thread", "score": 50, "num_comments": 30, "stickied": True},
               {"title": "Game Thread", "score": 1500, "num_comments": 5000, "stickied": False}]
-    real_get = reddit._get
-    reddit._get = lambda path: sample
+    real_creds, real_api = (reddit.CLIENT_ID, reddit.CLIENT_SECRET), reddit._api_get
+    reddit.CLIENT_ID, reddit.CLIENT_SECRET = "id", "secret"
+    reddit._api_get = lambda path: sample
     try:
         out = reddit.reddit_sentiment("nba")
     finally:
-        reddit._get = real_get
-    res.check("data", "reddit parse: drops stickied, ranks by score, labels the sub",
+        reddit._api_get = real_api
+        reddit.CLIENT_ID, reddit.CLIENT_SECRET = real_creds
+    res.check("data", "reddit API tier: drops stickied, ranks by score, shows vote counts",
               "r/nba" in out and "Woj" in out and "Daily Thread" not in out
-              and out.index("Woj") < out.index("Game Thread"))
+              and "pts" in out and out.index("Woj") < out.index("Game Thread"))
+
+    # Tier 2 (no creds): fall back to reading Reddit through web search.
+    real_fetch = reddit.web._fetch
+    reddit.web._fetch = lambda url: (
+        '<a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fwww.reddit.com'
+        '%2Fr%2Fnba%2Fcomments%2Fx">Why the Lakers offseason flopped : r/nba - Reddit</a>'
+        '<a class="result__snippet" href="#">fans are torn on the D-Lo contract.</a>')
+    try:
+        assert not reddit._has_creds(), "test expects no creds set"
+        fb = reddit.reddit_sentiment("nba", "lakers")
+    finally:
+        reddit.web._fetch = real_fetch
+    res.check("data", "reddit fallback: reads r/nba via search, cleans the DDG title",
+              "via search" in fb and "Why the Lakers offseason flopped" in fb
+              and "Reddit" not in fb.split("flopped")[1].split("\n")[0])  # trailing "- Reddit" stripped
 
 
 def _check_calibration(res):

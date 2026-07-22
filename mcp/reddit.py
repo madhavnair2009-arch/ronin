@@ -3,35 +3,49 @@
 ronin — fan sentiment via Reddit, exposed as an MCP stdio server.
 
 Reddit blocks datacenter IPs on the UNAUTHENTICATED paths (old.reddit HTML and the public
-JSON both 403 us from Fly — verified 2026-07-21). But the OAuth API answers from the same IP
-(a bogus-cred probe there returns 401, not 403), so we go the sanctioned route, exactly like
-the Bluesky sentiment server: app credentials -> a token -> read the subreddit.
+JSON both 403 us from Fly — verified 2026-07-21), and getting sanctioned API access has been
+a dead end (request pending with no reply). So this tool runs in two tiers:
 
-App-only (client_credentials) grant — no Reddit user password, just a registered "script"
-app's id + secret, the direct parallel to a Bluesky app-password.
+  * WITH creds (REDDIT_CLIENT_ID/SECRET set): the real OAuth API — the Bluesky route,
+    app-only client_credentials, full listings with scores + comment counts + search.
+  * WITHOUT creds (today): fall back to searching Reddit through the `web` tool
+    (site:reddit.com/r/<sub>). DuckDuckGo already indexed Reddit, so this never touches
+    Reddit's IP block, needs no proxy/Tor and no new dependency — we just read the top
+    threads' titles + snippets. Less depth (no scores), but plenty for reading the room.
+
+The moment official access comes through, drop in the secret and the SAME tool upgrades to
+the API automatically — no other change.
 
 This is SENTIMENT, not fact (design doc: social = personality fuel). ronin reads the mood
-and reacts in its own voice — it does NOT mirror the crowd. r/nba etc. are where the real
-fan takes live, richer than the media-skewed Bluesky feed.
+and reacts in its own voice — it does NOT mirror the crowd.
 
 Tool:
-  reddit_sentiment(league?, topic?)   hot posts in the sport's subreddit, or a search
+  reddit_sentiment(league?, topic?)   hot/searched posts in the sport's subreddit
 
 Env:
-  REDDIT_CLIENT_ID, REDDIT_CLIENT_SECRET   from reddit.com/prefs/apps ("script" app)
+  REDDIT_CLIENT_ID, REDDIT_CLIENT_SECRET   optional; enable the full OAuth API when set
 
 Run:
   python3 reddit.py            MCP stdio server
-  python3 reddit.py selftest   query live (needs creds in env)
+  python3 reddit.py selftest   query live
 """
 
 import json
 import os
+import re
 import sys
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
+
+# The `web` sibling module backs the no-creds fallback. Import works both when this file is
+# run as a script (python3 mcp/reddit.py -> sibling on sys.path) and imported as a package
+# (from mcp import reddit, e.g. the eval harness).
+try:
+    import web
+except ImportError:  # pragma: no cover
+    from mcp import web
 
 CLIENT_ID = os.environ.get("REDDIT_CLIENT_ID", "")
 CLIENT_SECRET = os.environ.get("REDDIT_CLIENT_SECRET", "")
@@ -52,11 +66,18 @@ class SentimentError(Exception):
     pass
 
 
+def _sub_for(league):
+    return LEAGUE_SUB.get((league or "").strip().lower(), DEFAULT_SUB)
+
+
+def _has_creds():
+    return bool(CLIENT_ID and CLIENT_SECRET)
+
+
+# --- Tier 1: the real OAuth API (used only when creds are set) ---------------------------
 def _token():
     if _session["token"] and time.time() < _session["exp"] - 60:
         return _session["token"]
-    if not CLIENT_ID or not CLIENT_SECRET:
-        raise SentimentError("Reddit creds not set (REDDIT_CLIENT_ID/REDDIT_CLIENT_SECRET).")
     import base64
     auth = base64.b64encode(f"{CLIENT_ID}:{CLIENT_SECRET}".encode()).decode()
     req = urllib.request.Request(
@@ -77,8 +98,7 @@ def _token():
     return tok
 
 
-def _get(path):
-    """GET an oauth.reddit.com path, returning the listing children (post data dicts)."""
+def _api_get(path):
     req = urllib.request.Request(
         "https://oauth.reddit.com" + path,
         headers={"Authorization": "Bearer " + _token(), "User-Agent": UA},
@@ -92,33 +112,61 @@ def _get(path):
     return [c.get("data") or {} for c in children]
 
 
-def _sub_for(league):
-    return LEAGUE_SUB.get((league or "").strip().lower(), DEFAULT_SUB)
+def _via_api(sub, topic):
+    if topic:
+        q = urllib.parse.urlencode({"q": topic, "restrict_sr": 1, "sort": "top", "t": "month",
+                                    "limit": 15})
+        posts = _api_get(f"/r/{sub}/search?{q}")
+        header = f"What r/{sub} is saying about '{topic}' (fan sentiment, NOT fact):"
+    else:
+        posts = _api_get(f"/r/{sub}/hot?limit=15")
+        header = f"Top of r/{sub} right now (fan sentiment, NOT fact):"
+    posts = [p for p in posts if not p.get("stickied")]
+    posts.sort(key=lambda p: p.get("score", 0), reverse=True)
+    if not posts:
+        where = f" about '{topic}'" if topic else ""
+        return f"Not much on r/{sub}{where} right now."
+    lines = [header]
+    for p in posts[:8]:
+        title = (p.get("title") or "").strip().replace("\n", " ")
+        if title:
+            lines.append(f"• [{p.get('score', 0)} pts, {p.get('num_comments', 0)} comments] {title}")
+    return "\n".join(lines)
+
+
+# --- Tier 2: read Reddit through web search (no creds, no proxy, no IP block) -------------
+def _clean_reddit_title(title, sub):
+    """DDG dresses Reddit results up ('… - Reddit', 'r/nba on Reddit: …', '… : r/nba')."""
+    t = re.sub(r"\s*[-|:]\s*Reddit\s*$", "", title, flags=re.I)
+    t = re.sub(rf"^r/{re.escape(sub)}\s+on\s+Reddit:\s*", "", t, flags=re.I)
+    t = re.sub(rf"\s*:\s*r/{re.escape(sub)}\s*$", "", t, flags=re.I)
+    return t.strip()
+
+
+def _via_search(sub, topic):
+    query = f"site:reddit.com/r/{sub}" + (f" {topic}" if topic else "")
+    results = web._parse(web._fetch(web.SERP + urllib.parse.quote_plus(query)))
+    # keep only real reddit threads
+    results = [r for r in results if "reddit.com" in (r.get("source") or "")]
+    if not results:
+        where = f" about '{topic}'" if topic else ""
+        return f"Couldn't surface r/{sub} chatter{where} right now."
+    header = (f"What r/{sub} is saying about '{topic}' (fan sentiment via search, NOT fact — "
+              f"no vote counts on this path):" if topic
+              else f"Recent r/{sub} threads (fan sentiment via search, NOT fact):")
+    lines = [header]
+    for r in results:
+        title = _clean_reddit_title(r["title"], sub)
+        if not title:
+            continue
+        snip = f"\n  {r['snippet'][:220]}" if r.get("snippet") else ""
+        lines.append(f"• {title}{snip}")
+    return "\n".join(lines)
 
 
 def reddit_sentiment(league=None, topic=None):
     sub = _sub_for(league)
-    if topic:
-        q = urllib.parse.urlencode({"q": topic, "restrict_sr": 1, "sort": "top", "t": "month",
-                                    "limit": 15})
-        posts = _get(f"/r/{sub}/search?{q}")
-        header = f"What r/{sub} is saying about '{topic}' (fan sentiment, NOT fact):"
-    else:
-        posts = _get(f"/r/{sub}/hot?limit=15")
-        header = f"Top of r/{sub} right now (fan sentiment, NOT fact):"
-    # Drop pinned/stickied mod posts; keep the real chatter, ranked by score.
-    posts = [p for p in posts if not p.get("stickied")]
-    posts.sort(key=lambda p: p.get("score", 0), reverse=True)
-    if not posts:
-        where = f"about '{topic}'" if topic else ""
-        return f"Not much on r/{sub} {where} right now.".replace("  ", " ")
-    lines = [header]
-    for p in posts[:8]:
-        title = (p.get("title") or "").strip().replace("\n", " ")
-        if not title:
-            continue
-        lines.append(f"• [{p.get('score', 0)} pts, {p.get('num_comments', 0)} comments] {title}")
-    return "\n".join(lines)
+    return _via_api(sub, topic) if _has_creds() else _via_search(sub, topic)
 
 
 TOOLS = {
@@ -195,7 +243,7 @@ def serve():
                 text = tool["fn"](params.get("arguments") or {})
                 _send({"jsonrpc": "2.0", "id": id_,
                        "result": {"content": [{"type": "text", "text": text}]}})
-            except SentimentError as e:
+            except (SentimentError, web.WebError) as e:
                 _send({"jsonrpc": "2.0", "id": id_, "result": {
                     "content": [{"type": "text", "text": f"Reddit sentiment unavailable: {e}"}],
                     "isError": True}})
@@ -210,6 +258,7 @@ def serve():
 
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "selftest":
+        print(f"(creds set: {_has_creds()})")
         print("=== reddit_sentiment('nba') ===")
         print(reddit_sentiment("nba"))
         print("\n=== reddit_sentiment('nba', 'Lakers') ===")
