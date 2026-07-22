@@ -14,7 +14,9 @@ autonomous **roam** loop (forms takes, proactively pings, reflects on allegiance
 ## Live status
 - **Deployed & healthy** on Fly.io — app **`ronin-sports`** (region `iad`, one machine).
 - Repo: **github.com/madhavnair2009-arch/ronin** — local `main` == `origin/main` == deployed
-  (last commit `145ac03`). Everything below is live. Harness **66/66**.
+  (last code commit `372a373`). Everything below is live. Harness **69/69**.
+- **No open correctness bugs.** Next up is watching the calibration machinery on real outcomes
+  (item 1) and closing out the key revocation (item 7).
 
 ---
 
@@ -108,17 +110,26 @@ through `_extract_json`, so pings were never affected. Guarded by 6 data cases *
 behavior assertion** (any reply carrying a thinking tag fails the harness, mirroring the
 no-em-dash rule). Harness **66/66**.
 
-### ⭐ START HERE tomorrow — the shared-cursor bug (backlog #2)
-The last open correctness issue, and the last of the "two halves don't share state" family.
-`scope` in `roam.run_once` is `f"{league}:{team.lower()}"` with **no uid** (roam.py, the news
-loop). It's read/written inside the per-user loop, so if two users follow the same team, the
-first user's pass marks the team's headlines seen and the **second user never hears them**.
-Same silent-news-loss family as the judge-timeout bug (already fixed) and the proactive-ping
-context bug (already fixed). Fix: put the uid in the scope key (`f"{uid}:{league}:{team}"`).
-That cold-starts every cursor once → each baselines silently (no back-blast), so it's safe.
-Also check the `mood.json` scope (`sentiment_sweep`) — it's currently `league:team` too, but
-mood is arguably shared across users of a team, so decide per-axis. Add a regression case
-(two users, same team, both get the news) to the harness.
+**Shipped 2026-07-22 (live, `372a373`): the shared-cursor bug — the last open correctness issue.**
+The news cursor was `f"{league}:{team.lower()}"` but read/written inside the per-user loop, so
+two people on the same team shared it: the first user's pass consumed the headlines and the
+second never heard them. Worse than "misses one" — `cursor_is_cold()` read the same key, so the
+second user never *baselined* either and was starved permanently. **`mood.json` had the identical
+defect, and subtler:** a vibe judge only calls a shift when the mood differs from the one it last
+saw, and `set_mood()` lands mid-loop, so the first user's write became the second user's "prior"
+and their judge saw a steady mood. **Both are now `f"{uid}:{league}:{team}"`.** Scoping mood per
+user costs nothing — the sentiment fetch and the judge already ran per user (the judge
+personalizes off `_recent_texts(uid)`). Verified live: both axes baselined silently on the new
+keys, **0 pings**, no back-blast. Regression case pins both axes and was **confirmed to fail
+against the old code** (`reached [101]` — only the first user). Harness **69/69**.
+
+**This retires the "two halves don't share state" family** (judge-timeout → proactive-ping
+context → shared cursor). The optional refactor that would prevent a fourth: have roam write to
+the graff session transcript, so roam and chat share more than `memory.py`.
+
+*Leftover:* the pre-fix keys (`nba:golden state warriors`, `nfl:san francisco 49ers`,
+`wnba:dallas wings` in `cursor.json`; `nba:golden state warriors` in `mood.json`) are orphaned
+and unreachable — harmless, but can be deleted whenever.
 
 1. **Watch calibration in the wild.** The machinery is live but unproven on real outcomes:
    - `grade()` only fires on takes that carry a `deadline` — the judge sets it, so confirm real
@@ -130,12 +141,11 @@ mood is arguably shared across users of a team, so decide per-axis. Add a regres
 2. **Relationship digest tuning.** `digest()` runs every ~4h (`ROAM_DIGEST_EVERY=8`) off the
    graff session transcript. Sessions live in `/app` (ephemeral, not `/data`) — a redeploy wipes
    them, so a fresh machine re-digests from scratch. If that matters, move sessions onto `/data`.
-3. **The two-halves state family (recurring).** Three bugs now share one root: roam and chat
-   share `memory.py` but not the graff transcript. Fixed piecemeal (proactive-ping context) but
-   the **shared-cursor bug is still open** — `scope` in `run_once` is `league:team` with no uid,
-   so if two users follow the same team, the first user's pass marks headlines seen and the
-   second never hears them. A "roam writes to the session transcript" refactor could retire the
-   whole family.
+3. ~~**The two-halves state family.**~~ **Closed 2026-07-22** — all three fixed (judge-timeout,
+   proactive-ping context, shared cursor + mood). Root cause stands, though: roam and chat share
+   `memory.py` but not the graff transcript. **The pattern to watch for in new code:** any state
+   read or written inside the per-user loop but keyed without the uid. A "roam writes to the
+   session transcript" refactor would remove the class outright.
 4. ~~**Fact-grounding spot-check.**~~ **Closed 2026-07-22 — false alarm.** The "Matisse Thybulle,
    1yr $3.3M" claim is verbatim from `sports_team_news`: *"Sources: Matisse Thybulle agrees to
    1-year deal with Lakers … a one-year, $3.3 million deal"* (ESPN, 2026-07-22). No transactions
