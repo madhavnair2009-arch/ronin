@@ -196,6 +196,22 @@ def run_data(res):
     res.check("data", "outbound keys age out past the TTL",
               not memory.already_sent("mO", "stale"))
 
+    # a proactive ping reaches the chat prompt so a follow-up has something to attach to
+    import ronin_reply
+    memory.set_team("mP", "nba", "Golden State Warriors", "GSW", chat_id=1)
+    memory._update("outbound.json", lambda d: d.setdefault("sent", []).append(
+        {"uid": "mP", "key": "curry", "text": "curry got his own HOF exhibit lol",
+         "at": time.time() - 3 * 3600}), {})
+    memory._update("outbound.json", lambda d: d["sent"].append(
+        {"uid": "mP", "key": "ancient", "text": "ancient news", "at": time.time() - 4 * 86400}), {})
+    rs = memory.recent_sent("mP")
+    res.check("data", "recent_sent returns the fresh ping, drops the 4-day-old one",
+              len(rs) == 1 and "HOF" in rs[0]["text"])
+    sp = ronin_reply._load_system_prompt("mP")
+    res.check("data", "proactive ping is injected into the chat system prompt",
+              "HOF exhibit" in sp and "unprompted" in sp and "3h ago" in sp
+              and "ancient news" not in sp)
+
     _check_roam_retry(res)
 
 
@@ -282,12 +298,15 @@ def _seed_clear():
     memory._write("affinity.json", [])
 
 
-def _run_case(res, name, message, seed=None, must=None, must_not=None, must_any=None):
+def _run_case(res, name, message, seed=None, must=None, must_not=None, must_any=None,
+              proactive=None):
     import ronin_reply
     _seed_clear()
     if seed:
         seed()
     sender = f"eval_{abs(hash(name)) % 10**8}_{int(datetime.datetime.now().timestamp())}"
+    if proactive:  # simulate a roam ping this user is now replying to
+        memory.log_sent(sender, "eval_ping", proactive)
     reply = ronin_reply.reply(sender, message)
     print(f"    ↳ {name}: {reply[:160]!r}")
     if reply.startswith("(ronin hiccup") or not reply.strip():
@@ -354,6 +373,15 @@ def run_behavior(res):
               seed=lambda: (memory.upsert_affinity("Cape Verde", "wc", "CPV", 0.6, "underdog run"),
                             memory.upsert_affinity("Spain", "wc", "ESP", -0.32, "the machine")),
               must_any=["cape verde", "spain"])
+
+    # A bare follow-up to a proactive ping resolves against that ping, not stale chat.
+    # (The exact screenshot: ronin texts about Curry's HOF exhibit, user replies "who's
+    # funding it", ronin used to veer to the World Cup.)
+    _run_case(res, "follow-up attaches to the proactive ping, not an old topic",
+              "whos funding it? thats dope",
+              proactive="curry getting his own HOF exhibit while still active is kinda insane",
+              must_any=["curry", "hof", "hall of fame", "exhibit", "hall"],
+              must_not=["world cup", "fifa", "host countr"])
 
 
 def _cleanup():

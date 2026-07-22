@@ -421,6 +421,18 @@ def log_sent(uid, key, text):
     _update("outbound.json", go, {})
 
 
+def recent_sent(uid, n=5, within_secs=48 * 3600):
+    """The last few things ronin proactively texted this user, newest last, each
+    {text, at}. The roam loop sends these out-of-band and they never land in the graff
+    chat session, so the chat path feeds them back in as context — otherwise a follow-up
+    like 'who's funding it?' has nothing to attach to and anchors on stale chat history."""
+    now = time.time()
+    mine = [s for s in _read("outbound.json", {}).get("sent", [])
+            if s.get("uid") == str(uid) and isinstance(s.get("at"), (int, float))
+            and now - s["at"] <= within_secs]
+    return [{"text": s.get("text", ""), "at": s["at"]} for s in mine[-n:]]
+
+
 if __name__ == "__main__":
     # tiny smoke test
     print("state dir:", STATE_DIR)

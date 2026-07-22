@@ -140,9 +140,7 @@ def _existing_take(subject_team):
 
 
 def _recent_texts(uid, n=5):
-    log = memory._read("outbound.json", {}).get("sent", [])
-    mine = [s["text"] for s in log if s.get("uid") == str(uid)]
-    return mine[-n:]
+    return [p["text"] for p in memory.recent_sent(uid, n=n)]
 
 
 def _extract_json(text):

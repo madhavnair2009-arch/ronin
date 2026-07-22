@@ -99,7 +99,31 @@ def _load_system_prompt(sender_id=None):
                          "have their team for that one yet and ask who it is, don't act clueless "
                          "about the teams you DO have.")
             persona += "\n".join(block) + "\n"
+        # What you texted them out of the blue. The roam loop sends these and they DON'T
+        # land in this chat thread, so without this a reply to one ("who's funding it?")
+        # looks like it came from nowhere and you anchor on the wrong, older topic.
+        pinged = memory.recent_sent(sender_id)
+        if pinged:
+            now = datetime.datetime.now()
+            lines = ["\n## What you recently texted them first (unprompted — they may be replying to this)"]
+            for p in pinged:
+                when = datetime.datetime.fromtimestamp(p["at"])
+                ago = _ago(now - when)
+                lines.append(f"- ({ago}) \"{p['text']}\"")
+            lines.append("If their message reads like a follow-up (a bare 'who', 'why', 'that's "
+                         "dope', a pronoun with no antecedent), assume it's about the most recent "
+                         "of these, not whatever you were chatting about before.")
+            persona += "\n".join(lines) + "\n"
     return persona
+
+
+def _ago(delta):
+    secs = max(0, int(delta.total_seconds()))
+    if secs < 3600:
+        return f"{secs // 60}m ago"
+    if secs < 86400:
+        return f"{secs // 3600}h ago"
+    return f"{secs // 86400}d ago"
 
 
 def _session_name(sender_id):

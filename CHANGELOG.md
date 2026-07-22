@@ -5,6 +5,24 @@ architecture and `README.md` for how to run it.
 
 ---
 
+### Follow-ups to a proactive ping now land in the right context (2026-07-21)
+Reported from a real chat: ronin texts unprompted (Curry's HOF exhibit), the user replies
+"who's funding it? that's dope", and ronin answers about the *World Cup*. It didn't drop
+the message, it resolved "it" against the wrong topic.
+- **Root cause: the two halves share memory but not the transcript.** Chat replies resume a
+  graff session (`sess_<uid>.session.json`); the roam loop sends its pings through
+  `_tg_send` and logs them to `outbound.json`, but never writes them into that session. So a
+  reply to a ping resumes a transcript whose last real exchange was something older, and the
+  model anchors the bare follow-up there. Same "the two halves don't share state" family as
+  the shared-cursor note below.
+- **Fix (`memory.recent_sent` + `ronin_reply`):** the chat system prompt now carries the
+  last few things ronin texted this user unprompted (48h window), each with a rough age, and
+  tells the model a bare "who/why/that's dope" is probably a reply to the most recent one.
+  It's the mirror of what the roam judge already fed itself as `things_you_recently_told_them`;
+  roam now shares the one accessor so the two can't drift.
+- **Verified:** the exact screenshot as a behavior case, plus a 4x stability run — the
+  wrong-topic veer (World Cup) happened 0/4; it stays on the exhibit every time. Harness 35/35.
+
 ### Reliability pass: the three review-#3 bugs (2026-07-20)
 Three failure modes from the CHANGELOG review that had never actually bitten a user yet,
 fixed together with regression cases so they can't come back. Full harness **32/32**.
