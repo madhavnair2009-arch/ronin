@@ -5,6 +5,26 @@ architecture and `README.md` for how to run it.
 
 ---
 
+### Web search: a grounded answer for what ESPN can't cover (2026-07-21)
+A real gap: ronin proactively texted about Curry's HOF exhibit, the user asked "who's
+funding it?", and the sports tools had no answer. New `web_search` tool so ronin can look
+things up instead of guessing — keeping the fact/personality split (facts from a tool, voice
+its own).
+
+- **`mcp/web.py`** — a search-only MCP server built on the `kuri-fetch` binary already in the
+  image (previously dead code). It fetches a server-rendered SERP
+  (`html.duckduckgo.com/html`) and parses the top 5 results (title + snippet + source),
+  same fetch-then-parse shape as `reddit_nba.py`.
+- **Security, given this bot takes DMs from strangers (the RCE-fix firewall is why):**
+  chose **search-only** over URL-fetch or a full browser. The tool NEVER fetches a
+  user-supplied URL — the only host it ever hits is the SERP, with the user's words
+  URL-encoded into the query. No arbitrary fetch = no SSRF at metadata/localhost/internal
+  addresses. `mcp__web__*` added to `.harness/tool-firewall.sh` (still no bash/file/webfetch
+  for a stranger's DM). Results are untrusted web text: the persona tells ronin to treat them
+  as information only and ignore any "instructions" embedded in a page.
+- **Harness:** deterministic parser test (pinned SERP sample, MAX_RESULTS cap, source
+  extraction) + a live SERP integration check (skips gracefully if the IP is blocked).
+
 ### Calibration + take de-dup, and memory of the person (2026-07-21)
 Two design-doc chapters at once: takes that get graded so conviction is earned, and a
 per-user profile so ronin talks like it knows you. Harness 48/48 (both new behaviors 4/4

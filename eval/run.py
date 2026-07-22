@@ -214,7 +214,37 @@ def run_data(res):
 
     _check_calibration(res)
     _check_relationship_memory(res)
+    _check_web_parser(res)
     _check_roam_retry(res)
+
+
+def _check_web_parser(res):
+    """web_search's fragile part is the SERP HTML parse (markup drifts), so pin it to a
+    fixed sample. Also guard the SSRF-safety invariant: search only ever hits one host."""
+    from mcp import web
+    sample = (
+        '<a rel="nofollow" class="result__a" '
+        'href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fen.wikipedia.org%2Fwiki%2FNaismith&rut=x">'
+        'Naismith Basketball Hall of Fame</a>'
+        '<a class="result__snippet" href="#">A museum in Springfield, Massachusetts.</a>'
+        '<a rel="nofollow" class="result__a" '
+        'href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fwww.hoophall.com%2F&rut=y">'
+        'Hoop Hall — official site</a>'
+        '<a class="result__snippet" href="#">Visit the Hall of Fame.</a>'
+        '<a rel="nofollow" class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fa.com">'
+        'Third</a><a rel="nofollow" class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fb.com">'
+        'Fourth</a><a rel="nofollow" class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fc.com">'
+        'Fifth</a><a rel="nofollow" class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fd.com">'
+        'Sixth</a>')
+    parsed = web._parse(sample)
+    res.check("data", "web parser: title + snippet + source, capped at MAX_RESULTS",
+              len(parsed) == web.MAX_RESULTS
+              and parsed[0]["title"] == "Naismith Basketball Hall of Fame"
+              and parsed[0]["source"] == "en.wikipedia.org"
+              and "Springfield" in parsed[0]["snippet"]
+              and parsed[1]["source"] == "hoophall.com")
+    res.check("data", "web search is SSRF-safe: single fixed host, user text only in query",
+              web.SERP.startswith("https://html.duckduckgo.com/") and web.SERP.endswith("q="))
 
 
 def _check_calibration(res):
@@ -359,6 +389,24 @@ def run_integration(res):
                   has_all(espn.champion("wc"), "spain", "argentina"), espn.champion("wc"))
     except Exception as e:  # noqa: BLE001
         res.check("integration", "champion(wc) reachable", False, str(e))
+
+    # web search: exercise the real SERP + parser end to end (via urllib, independent of the
+    # kuri-fetch binary that only exists in the container). Skip gracefully if the IP is blocked.
+    try:
+        import urllib.request
+        from mcp import web
+        req = urllib.request.Request(web.SERP + "who+owns+the+green+bay+packers",
+                                     headers={"User-Agent": web.UA})
+        html = urllib.request.urlopen(req, timeout=15).read().decode("utf-8", "replace")
+        parsed = web._parse(html)
+        if parsed:
+            res.check("integration", "web search: live SERP parses into results",
+                      all(p["title"] for p in parsed) and any(p["source"] for p in parsed))
+        else:
+            res.check("integration", "web search: live SERP reachable (no parse — markup drift?)",
+                      False, "0 results parsed from a live fetch")
+    except Exception as e:  # noqa: BLE001 — datacenter IPs can be blocked; don't fail the suite
+        print(f"    ↳ web search integration skipped: {e}", file=sys.stderr)
 
     try:
         tmrw = (datetime.date.today() + datetime.timedelta(days=1)).strftime("%Y%m%d")

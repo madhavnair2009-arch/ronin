@@ -17,8 +17,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
     && rm /tmp/graff.tgz \
     && graff --version
 
-# kuri-fetch (justrach/kuri): the standalone HTTP fetcher used by the reddit sentiment
-# tool to read old.reddit (Reddit's API/JSON 403s us). Linux tarball is flat binaries.
+# kuri-fetch (justrach/kuri): the standalone HTTP fetcher that backs web search
+# (mcp/web.py) — it reads server-rendered HTML with a browser UA, no API key. Linux
+# tarball is flat binaries.
 ARG KURI_VERSION=v0.4.4
 RUN curl -fsSL "https://github.com/justrach/kuri/releases/download/${KURI_VERSION}/kuri-${KURI_VERSION}-${GRAFF_ARCH}-linux.tar.gz" \
        -o /tmp/kuri.tgz \
