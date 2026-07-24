@@ -214,6 +214,7 @@ def run_data(res):
               and "ancient news" not in sp)
 
     _check_calibration(res)
+    _check_grade_pass(res)
     _check_relationship_memory(res)
     _check_web_parser(res)
     _check_sentiment_sweep(res)
@@ -396,6 +397,47 @@ def _check_calibration(res):
     res.check("data", "chat prompt shows the earned track record, hides graded takes",
               "track record" in sp and "1 right, 1 wrong" in sp
               and "Steph's HOF case" not in sp.split("track record")[0].split("standing takes")[-1])
+
+
+def _check_grade_pass(res):
+    """Drive the whole grade() path, not just the memory helpers, with only the graff call
+    stubbed — so _grade_one runs its real body. That body once referenced time.strftime with
+    no `import time` in roam.py, which crashed the grader on the first due take every time;
+    the memory-only calibration test never exercised it, so nothing caught it."""
+    import types
+    import roam
+    real_sub = roam.subprocess
+
+    def fake_run(verdict):
+        resolved = "true" if verdict else "false"
+        payload = ('{"resolved": %s, "verdict": "%s", "note": "self-test"}'
+                   % (resolved, verdict or "unclear"))
+        return types.SimpleNamespace(returncode=0, stdout=payload, stderr="")
+
+    try:
+        # A real resolve: the grader reaches _grade_one's body (the crashing line) and settles.
+        # grade() drains every due take in one pass, so seed the defer case only afterward.
+        memory.upsert_take("Spain WC", "Spain wins it", 0.6, topic="grade-hit-test",
+                           deadline=20250101, resolves_when="WC final")
+        roam.subprocess = types.SimpleNamespace(
+            run=lambda *a, **k: fake_run("hit"), TimeoutExpired=real_sub.TimeoutExpired)
+        roam.grade(dry_run=False)
+        hit = [t for t in memory.get_takes() if t["topic"] == "grade-hit-test"][0]
+        res.check("data", "grade() runs _grade_one end to end and settles a due take",
+                  hit["status"] == "hit" and memory.get_record()["hits"] >= 1)
+        # An unclear verdict defers rather than settling, and doesn't touch the record.
+        memory.upsert_take("Knicks ceiling", "conf finals", 0.6, topic="grade-defer-test",
+                           deadline=20250101, resolves_when="playoff result")
+        before = memory.get_record()["hits"] + memory.get_record()["misses"]
+        roam.subprocess = types.SimpleNamespace(
+            run=lambda *a, **k: fake_run(None), TimeoutExpired=real_sub.TimeoutExpired)
+        roam.grade(dry_run=False)
+        defer = [t for t in memory.get_takes() if t["topic"] == "grade-defer-test"][0]
+        after = memory.get_record()["hits"] + memory.get_record()["misses"]
+        res.check("data", "an unclear grade defers the take and leaves the record untouched",
+                  defer["status"] == "open" and defer["deadline"] > 20250101 and after == before)
+    finally:
+        roam.subprocess = real_sub
 
 
 def _check_relationship_memory(res):
