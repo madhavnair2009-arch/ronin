@@ -14,9 +14,10 @@ autonomous **roam** loop (forms takes, proactively pings, reflects on allegiance
 ## Live status
 - **Deployed & healthy** on Fly.io — app **`ronin-sports`** (region `iad`, one machine).
 - Repo: **github.com/madhavnair2009-arch/ronin** — local `main` == `origin/main` == deployed
-  (last code commit `372a373`). Everything below is live. Harness **69/69**.
-- **No open correctness bugs.** Next up is watching the calibration machinery on real outcomes
-  (item 1) and closing out the key revocation (item 7).
+  (last code commit `d2d5e92`). Everything below is live. Harness **71/71**.
+- **No open correctness bugs.** The grader is now proven end-to-end (was silently crash-broken —
+  see below). Next up: confirm real roam takes get `deadline`s set (item 1) and close out the key
+  revocation (item 7).
 
 ---
 
@@ -131,12 +132,27 @@ the graff session transcript, so roam and chat share more than `memory.py`.
 `wnba:dallas wings` in `cursor.json`; `nba:golden state warriors` in `mood.json`) are orphaned
 and unreachable — harmless, but can be deleted whenever.
 
-1. **Watch calibration in the wild.** The machinery is live but unproven on real outcomes:
-   - `grade()` only fires on takes that carry a `deadline` — the judge sets it, so confirm real
-     roam-formed takes actually get sensible `resolves_when`/`deadline` values (spot-check
-     `/data/takes.json` after a few news-heavy days). No deadline = never graded.
-   - Grading spends tool calls (budget 6) per overdue take; cheap now (few deadlined takes), but
-     watch cost once they accumulate. `calibration.json` holds the record.
+**Shipped 2026-07-23 (live, `d2d5e92`): the grader had NEVER worked.** `_grade_one` built its
+context with `time.strftime(...)` but `roam.py` imports `datetime`, not `time`, so `grade()`
+`NameError`ed on the first due take and settled nothing. It went undetected because it had never
+run: no roam-formed take on the volume carries a `deadline` (all four takes are hand-authored
+seeds), so the grader's worklist was always empty, and the calibration data test only ever called
+`resolve_take`/`get_record` directly, never reaching `_grade_one`. Found by seeding a **verifiable**
+synthetic take (Spain won the 2026 WC, checkable via `sports_champion`) on the live volume and
+running `grade()` — it crashed exactly there. Fixed (`import time`), added `_check_grade_pass`
+(drives `grade()` with only the graff call stubbed so `_grade_one` runs its real body; confirmed
+it fails against the old code), and **proved it live end-to-end on the fixed container**: graded
+the Spain take a HIT off the real tool, conf 0.6→0.7, wrote a grounded `calibration.json` entry.
+Synthetic take + record restored from backup afterward (the volume must never carry a fake
+"1-0, nailed the Spain call"). Harness **71/71**.
+
+1. **Watch calibration in the wild — now the *mechanism* is proven, the open question is the
+   judge's inputs.** The grader fires and grades correctly; what's still unverified is whether
+   real roam-formed takes get sensible `resolves_when`/`deadline` values (the judge sets them, in
+   `run_once`). No deadline = never graded, so the whole track record stays empty. Spot-check
+   `/data/takes.json` after a few news-heavy days (season ramps ~Sept); if roam takes show up with
+   `deadline: null`, that's the next thing to chase — in the JUDGE prompt, not the grader.
+   - Grading spends tool calls (budget 6) per overdue take; cheap now, watch cost as they accrue.
    - Deferral pushes a stuck take's deadline +7d each unclear pass — make sure nothing thrashes.
 2. **Relationship digest tuning.** `digest()` runs every ~4h (`ROAM_DIGEST_EVERY=8`) off the
    graff session transcript. Sessions live in `/app` (ephemeral, not `/data`) — a redeploy wipes
