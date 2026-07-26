@@ -1,7 +1,7 @@
 # ronin — next-session handoff
 
 Cold-start brief for picking this back up. For the full architecture see `OVERVIEW.md`,
-for the build log see `CHANGELOG.md`. Last worked: **2026-07-22**.
+for the build log see `CHANGELOG.md`. Last worked: **2026-07-23**.
 
 ---
 

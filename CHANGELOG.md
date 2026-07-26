@@ -5,6 +5,52 @@ architecture and `README.md` for how to run it.
 
 ---
 
+### The calibration grader had never worked (2026-07-23)
+`_grade_one` built its context with `time.strftime(...)`, but `roam.py` imports `datetime`, not
+`time` — so `grade()` raised `NameError` on the first due take and settled nothing. It went
+undetected because it had never run: no roam-formed take on the volume carries a `deadline` (all
+four are hand-authored seeds), so the grader's worklist was always empty, and the calibration
+data test only called `resolve_take`/`get_record` directly, never reaching `_grade_one`.
+- **Found by proving it, not reading it:** seeded one *verifiable* synthetic take (Spain won the
+  2026 World Cup, checkable via `sports_champion`) on the live volume and ran `grade()` — it
+  crashed exactly there. Fix is one `import time`.
+- **Proven live end-to-end on the fixed container:** graded the Spain take a HIT off the real
+  tool, moved confidence 0.6→0.7, wrote a grounded `calibration.json` entry. Synthetic take +
+  record restored from backup afterward (the volume must never carry a fake "1-0" record).
+- New `_check_grade_pass` drives `grade()` with only the graff subprocess stubbed, so `_grade_one`
+  runs its real body; confirmed it `NameError`s against the pre-fix code. Harness 71/71.
+
+### Scope the news cursor and fan mood per user, not per team (2026-07-22)
+The roam news cursor was keyed `f"{league}:{team}"` but read/written inside the per-user loop, so
+two people following the same team shared it: the first user's pass consumed the headlines and the
+second never heard them — and since `cursor_is_cold()` read the same key, the second never even
+baselined, so they were starved permanently, not just once.
+- **`mood.json` had the identical defect, subtler:** a vibe judge only calls a shift when the mood
+  differs from the one it last saw, and `set_mood()` lands mid-loop, so the first user's write
+  became the second user's "prior" and their judge saw a steady mood. Both keys are now
+  `f"{uid}:{league}:{team}"`; scoping mood per user costs nothing (the fetch and judge already run
+  per user).
+- Both keys cold-start once and baseline silently, so no back-blast of old news. Verified live:
+  both axes baselined on the new keys with 0 pings.
+- **Retires the "two halves don't share state" family** (judge-timeout → proactive-ping context →
+  shared cursor). Regression case pins both axes, confirmed to fail against the old code
+  (`reached [101]` — only the first user). Harness 69/69.
+
+### Strip leaked `<thinking>` narration out of chat replies (2026-07-22)
+graff's built-in harness prompt leaves the model free to narrate its reasoning in `<thinking>`
+tags, and `-p` prints the whole answer to stdout — but `reply()` returned that stdout verbatim, so
+the narration shipped straight into Telegram (`<thinking>Simple intro question…</thinking>ronin. i
+live in sports way too much`).
+- Stripped at the transport boundary (`_strip_thinking` in `ronin_reply.py`), not via a persona
+  rule, since prompt rules only hold probabilistically. Handles multiple blocks, the
+  think/reasoning/scratchpad variants, and a tag dangling off either end of a cut-off turn, while
+  leaving ordinary prose ("i think the Spurs are for real") untouched.
+- Chat-only: every roam path reads its output through `_extract_json`, so pings were never
+  affected. Guarded by 6 data cases plus a universal behavior assertion (any reply carrying a
+  thinking tag fails the harness, mirroring the no-em-dash rule).
+
+---
+
 ### Proactive on a vibe shift, not just on news (2026-07-21)
 Roam reacted to events (a trade, an injury); now it also reacts to the **mood turning**. New
 `sentiment_sweep()` pass reads the blended fan sentiment for a user's team, compares it to the
