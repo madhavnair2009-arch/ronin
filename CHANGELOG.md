@@ -5,6 +5,34 @@ architecture and `README.md` for how to run it.
 
 ---
 
+### Per-path model routing + a deterministic em-dash guard (2026-07-29)
+Groundwork for running on many testers without Opus-on-everything. Every graff call now picks
+its own model, so the volume drivers get a cheap tier and the rare quality passes stay strong.
+- **Routing:** chat + roam news-judging + vibe checks + digest → cheap tier; reflect and grade
+  (rare, ~daily, judgment-heavy) → Opus. Each is a per-task env var (`RONIN_JUDGE_MODEL`, …);
+  `RONIN_ROAM_MODEL` overrides all roam tasks at once (kill switch). Chat is `RONIN_MODEL`.
+- **Cheap tier is Sonnet, not Haiku — graff limitation, not a choice.** graff forces adaptive
+  thinking in one-shot (`-p`) mode and Haiku 4.5 rejects it (`adaptive thinking is not supported
+  on this model`). Sonnet works today and is still a large drop from Opus. Routing is written so
+  Haiku is a one-line flip (`_CHEAP = _HAIKU` in `roam.py`) once it's unblocked — needs either a
+  graff one-shot effort flag (0.0.220 is out, untested against our tool-firewall hook) or moving
+  these calls onto graff's `--json` protocol + `set_fast`.
+- **Em-dash guard (`_normalize_voice`):** the behavior evals caught Sonnet using em dashes, which
+  the persona bans. A prompt rule is only probabilistic (Opus complied, cheaper models less so),
+  so it's now enforced deterministically at the transport boundary — a dash joining two clauses
+  becomes a comma — for both chat replies and roam pings. Same "fix it at the boundary, don't ask
+  the model nicely" approach as the `<thinking>` strip. Model-independent by construction.
+- **Validation:** Sonnet chat held up over 3 behavior runs — 7/10 cases solid 3/3 (every voice,
+  tool-grounding, no-hallucination, allegiance, track-record case), 3/10 flaky at 2/3 (the two
+  NFL-opener cases, harder now that preseason is in the scoreboard window, + the relationship
+  callback) — normal LLM variance, not a regression. Roam's JSON path (judge + vibe) verified
+  clean on Sonnet. Also fixed two stale calendar tests that assumed the NFL opener before
+  preseason entered the window. Offline suite 66/66.
+- **Not yet deployed:** `fly.toml` still pins `RONIN_MODEL=claude-opus-4-8` for chat; flip it to
+  `claude-sonnet-5` (and let roam pick up its Sonnet defaults) to go live.
+
+---
+
 ### The calibration grader had never worked (2026-07-23)
 `_grade_one` built its context with `time.strftime(...)`, but `roam.py` imports `datetime`, not
 `time` — so `grade()` raised `NameError` on the first due take and settled nothing. It went

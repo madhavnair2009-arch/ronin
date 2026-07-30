@@ -33,6 +33,7 @@ import urllib.request
 
 import memory
 from mcp import espn
+from ronin_reply import _normalize_voice  # shared: enforce the no-em-dash rule on pings too
 from mcp import fan
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -52,7 +53,32 @@ def _load_dotenv():
 
 _load_dotenv()
 GRAFF = os.path.expanduser("~/bin/graff")
-MODEL = os.environ.get("RONIN_ROAM_MODEL", "claude-opus-4-8")
+
+# Per-path model routing. The volume drivers — news judging and vibe checks run per user
+# per item on a schedule, so they dominate cost as testers scale — go to the cheap tier.
+# The rare, judgment-heavy passes (reflect and grade, each ~daily) stay on the strong model
+# where quality matters and volume is negligible. RONIN_ROAM_MODEL overrides every roam task
+# at once (kill switch / back-compat); a per-task var (e.g. RONIN_JUDGE_MODEL) overrides one.
+#
+# Cheap tier is SONNET, not Haiku: graff forces adaptive thinking in one-shot (-p) mode and
+# Haiku 4.5 rejects it ("adaptive thinking is not supported on this model"). Sonnet works
+# today and is still a large drop from Opus. When Haiku is unblocked (a graff one-shot effort
+# flag, or moving these calls to the --json protocol + set_fast), flip _CHEAP to _HAIKU.
+_HAIKU = "claude-haiku-4-5-20251001"  # target cheap tier; blocked by graff -p today
+_SONNET = "claude-sonnet-5"
+_OPUS = "claude-opus-4-8"
+_CHEAP = _SONNET
+
+
+def _roam_model(task_var, default):
+    return os.environ.get(task_var) or os.environ.get("RONIN_ROAM_MODEL") or default
+
+
+JUDGE_MODEL = _roam_model("RONIN_JUDGE_MODEL", _CHEAP)      # news notability, high volume
+VIBE_MODEL = _roam_model("RONIN_VIBE_MODEL", _CHEAP)        # mood shift, high volume
+DIGEST_MODEL = _roam_model("RONIN_DIGEST_MODEL", _CHEAP)    # transcript -> profile, moderate
+REFLECT_MODEL = _roam_model("RONIN_REFLECT_MODEL", _OPUS)   # allegiances, rare + quality
+GRADE_MODEL = _roam_model("RONIN_GRADE_MODEL", _OPUS)       # takes vs reality, rare + quality
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 MAX_PER_USER = int(os.environ.get("ROAM_MAX_PER_USER", "1"))     # msgs per user per pass
 PROACTIVE_MIN_GAP = int(os.environ.get("ROAM_MIN_GAP", "21600"))  # 6h between pings/user
@@ -211,7 +237,7 @@ def _judge(uid, team, league, headline):
     system_prompt = _dateline() + _load_persona() + "\n" + ROAM_ADDENDUM
     cmd = [
         GRAFF, "-p", "--yolo",
-        "--model", MODEL,
+        "--model", JUDGE_MODEL,
         "--append-system-prompt", system_prompt,
         "--max-tool-calls", "0",  # pure judgment; the fact is already in the prompt
         "--no-telemetry",
@@ -229,6 +255,9 @@ def _judge(uid, team, league, headline):
 
 
 def _tg_send(chat_id, text):
+    # Proactive pings are model-authored too, and now that judging can run on a cheaper model
+    # they need the same boundary guard the chat path has (persona bans em/en dashes).
+    text = _normalize_voice(text)
     if not TOKEN:
         print("[roam] no TELEGRAM_BOT_TOKEN; would have sent:", text, file=sys.stderr)
         return
@@ -375,7 +404,7 @@ def reflect(dry_run=False):
     )
     system_prompt = _dateline() + _load_persona() + "\n" + REFLECT_ADDENDUM
     cmd = [
-        GRAFF, "-p", "--yolo", "--model", MODEL,
+        GRAFF, "-p", "--yolo", "--model", REFLECT_MODEL,
         "--append-system-prompt", system_prompt,
         "--max-tool-calls", "0", "--no-telemetry",
         "Reflect on who you root for and against:\n" + context,
@@ -457,7 +486,7 @@ def _grade_one(take):
         "you_made_this_call_on": time.strftime("%Y-%m-%d", time.localtime(take.get("formed_at", 0))),
     }
     cmd = [
-        GRAFF, "-p", "--yolo", "--model", MODEL,
+        GRAFF, "-p", "--yolo", "--model", GRADE_MODEL,
         "--append-system-prompt", _dateline() + _load_persona() + "\n" + GRADE_ADDENDUM,
         "--max-tool-calls", "6",  # it needs the sports tools to check reality
         "--no-telemetry",
@@ -553,7 +582,7 @@ def _vibe_judge(uid, team, league, sentiment_text, prior_mood):
     }
     system_prompt = _dateline() + _load_persona() + "\n" + SENTIMENT_ADDENDUM
     cmd = [
-        GRAFF, "-p", "--yolo", "--model", MODEL,
+        GRAFF, "-p", "--yolo", "--model", VIBE_MODEL,
         "--append-system-prompt", system_prompt,
         "--max-tool-calls", "0",  # the sentiment is already in the prompt
         "--no-telemetry",
@@ -688,7 +717,7 @@ def _digest_one(uid, profile, turns):
         "what_you_already_remember": {k: profile.get(k, []) for k in memory.PROFILE_CAPS},
     }
     cmd = [
-        GRAFF, "-p", "--yolo", "--model", MODEL,
+        GRAFF, "-p", "--yolo", "--model", DIGEST_MODEL,
         "--append-system-prompt", _load_persona() + "\n" + DIGEST_ADDENDUM,
         "--max-tool-calls", "0",  # pure distillation; no facts to look up
         "--no-telemetry",

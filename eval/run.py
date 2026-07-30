@@ -531,6 +531,21 @@ def _check_thinking_strip(res):
     res.check("data", "a reasoning-only reply strips to empty (reply falls back)",
               s("<thinking>no idea</thinking>") == "")
 
+    # Em/en dashes are banned by the persona, but a prompt rule is probabilistic — cheaper
+    # models leak them. _normalize_voice enforces it deterministically at the boundary.
+    n = ronin_reply._normalize_voice
+    res.check("data", "a spaced em dash becomes a comma",
+              n("Curry's the pick — dude bent the sport") == "Curry's the pick, dude bent the sport")
+    res.check("data", "a tight em dash and an en dash both go",
+              n("first-ballot—no debate, 2020–2021 run") == "first-ballot, no debate, 2020, 2021 run"
+              and NO_EM_DASH not in n("a—b–c"))
+    res.check("data", "a trailing dash leaves no dangling comma",
+              n("wait —") == "wait")
+    res.check("data", "a dash before punctuation doesn't double it up",
+              n("he's done — .") == "he's done.")
+    res.check("data", "ordinary hyphens and prose are untouched",
+              n("a well-coached, run-first team") == "a well-coached, run-first team")
+
 
 def _check_roam_retry(res):
     """A judge timeout used to lose the headline forever: roam marked every new item seen
@@ -585,10 +600,25 @@ def _check_roam_retry(res):
 def run_integration(res):
     print("\n── integration (live ESPN, no LLM) ──")
     try:
+        # Assert the STRUCTURE (earliest-first ordering + a weekday), not a specific matchup:
+        # the earliest game changes with the calendar (preseason enters the window in late
+        # July), so a hardcoded "NE @ SEA Wed" goes stale. Season runs Aug->Feb, so map
+        # months to a season ordinal to compare dates across the Dec->Jan rollover.
+        def _season_md(line):
+            m = re.search(r"\b(\d{1,2})/(\d{1,2})\b", line)
+            if not m:
+                return None
+            mo, d = int(m.group(1)), int(m.group(2))
+            return (mo if mo >= 8 else mo + 12, d)
         sb = espn.scoreboard("nfl")
-        first = sb.splitlines()[1] if len(sb.splitlines()) > 1 else ""
+        games = [ln for ln in sb.splitlines() if "@" in ln and "/" in ln]
+        first = games[0] if games else ""
+        dated = [g for g in (_season_md(ln) for ln in games) if g]
+        has_weekday = any(w in first for w in
+                          ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"))
+        earliest_first = all(dated[i] <= dated[i + 1] for i in range(len(dated) - 1))
         res.check("integration", "nfl scoreboard: earliest game first, with weekday",
-                  has_all(first, "NE", "SEA") and "Wed" in first, first)
+                  bool(dated) and has_weekday and earliest_first, first)
     except Exception as e:  # noqa: BLE001
         res.check("integration", "nfl scoreboard reachable", False, str(e))
 
@@ -687,8 +717,11 @@ def _run_case(res, name, message, seed=None, must=None, must_not=None, must_any=
 def run_behavior(res):
     print("\n── behavior (model in the loop) ──")
 
-    _run_case(res, "first NFL game = Patriots/Seahawks, Sep 9",
-              "yo what was the first nfl game of the season",
+    # "regular season" is load-bearing: once preseason enters the scoreboard window (late
+    # July), the literal first game is the Hall of Fame Game, so a bare "first game" no longer
+    # means the opener. The test's real intent is opener resolution without date-guessing.
+    _run_case(res, "first NFL regular-season game = Patriots/Seahawks, Sep 9",
+              "yo what's the first nfl regular season game of the year",
               must=["patriot", "seahawk"], must_any=["9/9", "sept 9", "september 9", "9-9"])
 
     # What's being locked in is the refusal (must_not) — "I can only see today's games".
@@ -706,8 +739,10 @@ def run_behavior(res):
     # Locks in the "Wed 9/9 not Thu" weekday fix. Routes through the first-game path
     # (the reliable one); resolving a game by "team-A vs team-B" is a separate, weaker
     # capability tracked as its own finding — don't conflate them here.
+    # "regular season" again: the literal first game is now the preseason HOF game (a
+    # Thursday), so without qualifying it the correct weekday is Thursday, not the opener's.
     _run_case(res, "correct weekday for the opener (Wednesday)",
-              "what day of the week is the first nfl game of the season",
+              "what day of the week is the first nfl regular season game",
               must_any=["wednesday", "wed "])
 
     # Resolve a game by matchup instead of punting ("it's preseason, can't pin a date").

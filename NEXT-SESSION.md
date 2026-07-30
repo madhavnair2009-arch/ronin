@@ -13,11 +13,16 @@ autonomous **roam** loop (forms takes, proactively pings, reflects on allegiance
 
 ## Live status
 - **Deployed & healthy** on Fly.io — app **`ronin-sports`** (region `iad`, one machine).
-- Repo: **github.com/madhavnair2009-arch/ronin** — local `main` == `origin/main` == deployed
-  (last code commit `d2d5e92`). Everything below is live. Harness **71/71**.
-- **No open correctness bugs.** The grader is now proven end-to-end (was silently crash-broken —
-  see below). Next up: confirm real roam takes get `deadline`s set (item 1) and close out the key
-  revocation (item 7).
+- Repo: **github.com/madhavnair2009-arch/ronin**. Everything below is live EXCEPT the model
+  routing (committed but not deployed — see next bullet). Offline harness **66/66**.
+- **⚠️ Model routing is committed but NOT live.** Chat + cheap roam paths are wired to Sonnet in
+  code, but `fly.toml` still pins `RONIN_MODEL=claude-opus-4-8`, so **prod is still all-Opus**.
+  To go live: flip `fly.toml` `RONIN_MODEL` to `claude-sonnet-5` and `fly deploy` (roam picks up
+  its Sonnet defaults automatically; `RONIN_ROAM_MODEL=claude-opus-4-8` is the kill switch). This
+  was gated on validation, which passed — see the 2026-07-29 entry below.
+- **No open correctness bugs.** The grader is proven end-to-end. Next up: decide on the Sonnet
+  deploy (cost work below), confirm real roam takes get `deadline`s set (item 1), close out the
+  key revocation (item 7).
 
 ---
 
@@ -100,6 +105,28 @@ relationship memory** (`digest()` pass → per-user profile); **web search** (`m
 search-only, kuri-fetch → DDG SERP); **blended Reddit+Bluesky sentiment** (`mcp/fan.py`, one
 `fan_sentiment` tool, Reddit two-tier: OAuth-if-creds else `site:reddit.com` search);
 **proactive vibe-shift pings** (`sentiment_sweep()` + `mood.json`, every ~12h).
+
+**Committed 2026-07-29 (NOT deployed): per-path model routing + em-dash guard — the sustainability
+groundwork for opening to many testers.** Opus-on-everything doesn't scale, and the roam loop is
+the real cliff (it fans out per user × team × pass on a schedule, so cost tracks *signups*, not
+chat volume). Now every graff call routes its own model: chat + news-judging + vibe + digest →
+cheap tier, reflect + grade (rare) → Opus. Per-task env vars, with `RONIN_ROAM_MODEL` as an
+all-roam kill switch.
+- **Cheap tier is Sonnet, not Haiku, and that's a graff limitation:** graff forces adaptive
+  thinking in one-shot (`-p`) mode and Haiku 4.5 rejects it. Sonnet works today and is still a big
+  drop from Opus. Flip `_CHEAP = _HAIKU` in `roam.py` (and `RONIN_MODEL` for chat) once Haiku is
+  unblocked — needs a graff one-shot effort flag (0.0.220 exists, untested vs our tool-firewall
+  hook) or moving these calls to graff's `--json` protocol + `set_fast`.
+- **Em-dash guard (`_normalize_voice`):** the evals caught Sonnet using em dashes (persona bans
+  them). Enforced deterministically at the boundary for chat AND roam pings, not by prompt — same
+  approach as the `<thinking>` strip, so it's model-independent. `_normalize_voice` lives in
+  `ronin_reply.py`; `roam._tg_send` imports it.
+- **Validated:** Sonnet held over 3 behavior runs (7/10 solid 3/3 — all voice/tool/no-hallucination
+  cases; 3/10 flaky at 2/3 = normal variance, two aggravated by preseason being in the NFL window).
+  Roam JSON path (judge + vibe) verified clean on Sonnet.
+- **To ship:** flip `fly.toml` `RONIN_MODEL` → `claude-sonnet-5`, `fly deploy`. Watch the first
+  roam pass on Sonnet (eyeball a `run_once`/`sentiment_sweep` on the container) since roam is not
+  model-in-loop tested. Revert instantly with the env kill switch if a pass looks off.
 
 **Shipped 2026-07-22 (live, `145ac03`):** **`<thinking>` leak fixed.** graff's built-in harness
 prompt lets the model narrate its reasoning in `<thinking>` tags and `-p` prints the whole answer

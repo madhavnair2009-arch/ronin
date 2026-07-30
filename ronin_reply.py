@@ -39,7 +39,12 @@ def _load_dotenv():
 
 _load_dotenv()
 GRAFF = os.path.expanduser("~/bin/graff")
-MODEL = os.environ.get("RONIN_MODEL", "claude-opus-4-8")
+# Chat is the highest-volume, voice-critical path. Default it to Sonnet to keep cost
+# sustainable at scale; the behavior eval layer is what proves it holds the persona and
+# drives the ESPN tools reliably. (Haiku would be cheaper still, but graff forces adaptive
+# thinking in one-shot mode and Haiku 4.5 rejects it — see roam.py routing note.)
+# RONIN_MODEL overrides (fly.toml pins it per-env).
+MODEL = os.environ.get("RONIN_MODEL", "claude-sonnet-5")
 MAX_TOOL_CALLS = os.environ.get("RONIN_MAX_TOOL_CALLS", "8")  # cost/loop guard
 TURN_TIMEOUT = int(os.environ.get("RONIN_TURN_TIMEOUT", "120"))
 
@@ -181,6 +186,20 @@ def _strip_thinking(text):
     return text.strip()
 
 
+# The persona bans em/en dashes (the single biggest AI tell), but a prompt rule is only
+# probabilistic — Opus complied, cheaper models comply less reliably. Enforce it at the
+# boundary: a dash joining two clauses reads fine as a comma, so collapse it deterministically
+# and no model choice can leak one. (The persona still asks; this just guarantees it.)
+_EMDASH = re.compile(r"\s*[—–]\s*")
+
+
+def _normalize_voice(text):
+    text = _EMDASH.sub(", ", text)
+    text = re.sub(r"\s+([,.;:!?])", r"\1", text)   # no space before punctuation
+    text = re.sub(r",\s*([.;:!?])", r"\1", text)   # ", ." -> "." after the swap
+    return re.sub(r"[,\s]+$", "", text)            # no dangling comma from a trailing dash
+
+
 def _session_name(sender_id):
     safe = re.sub(r"[^A-Za-z0-9_-]", "_", str(sender_id))[:64] or "anon"
     return f"sess_{safe}"
@@ -220,7 +239,7 @@ def reply(sender_id, message):
         err = (out.stderr or "").strip().splitlines()
         detail = err[-1] if err else f"exit {out.returncode}"
         return f"(ronin hiccup: {detail})"
-    return _strip_thinking(out.stdout) or "…got nothing back, try again?"
+    return _normalize_voice(_strip_thinking(out.stdout)) or "…got nothing back, try again?"
 
 
 if __name__ == "__main__":
