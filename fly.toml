@@ -9,7 +9,10 @@ primary_region = "iad"
 [build]
 
 [env]
-  RONIN_MODEL = "claude-opus-4-8"
+  # Chat runs on Sonnet (validated by the behavior harness) to keep cost sustainable as
+  # testers scale. Roam picks up its own per-task defaults (cheap tier = Sonnet) from roam.py;
+  # RONIN_ROAM_MODEL="claude-opus-4-8" here is the kill switch if a roam pass looks off.
+  RONIN_MODEL = "claude-sonnet-5"
   RONIN_MAX_TOOL_CALLS = "8"
   # Persistent memory (takes/relationships/outbound log) lives on the mounted volume
   # so it survives deploys and restarts — otherwise the "mind" resets each ship.
