@@ -28,8 +28,9 @@ its own model, so the volume drivers get a cheap tier and the rare quality passe
   callback) — normal LLM variance, not a regression. Roam's JSON path (judge + vibe) verified
   clean on Sonnet. Also fixed two stale calendar tests that assumed the NFL opener before
   preseason entered the window. Offline suite 66/66.
-- **Not yet deployed:** `fly.toml` still pins `RONIN_MODEL=claude-opus-4-8` for chat; flip it to
-  `claude-sonnet-5` (and let roam pick up its Sonnet defaults) to go live.
+- **Deployed 2026-07-30** (`fly.toml` `RONIN_MODEL` → `claude-sonnet-5`). Verified in-container:
+  chat in-voice with no em dashes; roam dry passes clean (JUDGE/VIBE=sonnet, GRADE=opus). Shipped
+  alongside moving `ANTHROPIC_API_KEY` to the team workspace (both models confirmed on the key).
 
 ---
 
