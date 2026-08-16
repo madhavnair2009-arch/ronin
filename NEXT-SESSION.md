@@ -176,6 +176,39 @@ the Spain take a HIT off the real tool, conf 0.6→0.7, wrote a grounded `calibr
 Synthetic take + record restored from backup afterward (the volume must never carry a fake
 "1-0, nailed the Spain call"). Harness **71/71**.
 
+### ⭐ NEXT BUILD — per-user personality (rolled team + taste lens)
+Make ronin's *personality* personal, not just his memory. Today he's one global character with
+one earned allegiance set (the "it knows you" lock-in is only half-built). Give each user a ronin
+with his *own* team and taste, so "my ronin rides with the Thunder, yours is a star-power junkie"
+becomes a thing people screenshot. Design locked in a brainstorm (2026-08-16):
+
+- **Same voice + value floor, per-user taste on top (layered, NOT a different persona).** The
+  voice and the existing value-seed (pro player-dev/defense/underdogs, anti tanking/ring-chasing)
+  stay GLOBAL — every ronin shares them. The rolled taste is an extra per-user *lens* layered
+  over that floor. Honors "same values" + "colors his whole worldview": same values, plus a
+  personal flavor that reaches beyond just his team.
+- **Character creation = one cheap call per new user.** On first real contact: roll 2–3 descriptor
+  words from a curated vocab (star-power, home-grown, electric, defense-first, chaotic, methodical,
+  veteran, underdog…) → match to the team that best fits via ONE LLM call grounded in real ESPN
+  roster/style data → store the traits + team per user. That's the whole cost. No per-user daily
+  reflection (keeps the sustainability work intact).
+- **Fixed team, live takes.** The rolled team sticks forever (that's "your ronin"), but his
+  opinions about it stay current off the existing GLOBAL news/reflect. **Pure random, no reroll**
+  (feels like fate). The traits also color what he finds exciting in ANY game, not just his team.
+- **The juicy emergent bit:** ronin's rolled team is SEPARATE from the user's `/team`. So he has
+  his own squad to defend against yours → a built-in banter engine for free (you're a Warriors
+  guy, his rolled ronin needles you for star-chasing while championing his young core).
+- **How it lands on the code:** most per-user scaffolding exists (`get_profile`/`set_profile`,
+  `_load_system_prompt(sender_id)` already injects allegiances). Main change: **affinities go from
+  global to per-user-namespaced (`uid:league:team`) — literally the shared-cursor uid-scoping
+  pattern.** New piece = the one-time character-creation roll+match. `_load_system_prompt` gains a
+  per-user "taste lens" block layered over the global persona.
+- **Decisions still open (settle at build time):** (a) one signature team total vs one rolled team
+  per league (to match per-league memory); (b) who curates the descriptor vocab, 2 vs 3 traits,
+  mutually-exclusive pairs (can't be both methodical + chaotic); (c) migration — freshly roll all
+  existing users, or let the current global earned allegiances become his "default league read"
+  that the personal team layers over.
+
 1. **Watch calibration in the wild — now the *mechanism* is proven, the open question is the
    judge's inputs.** The grader fires and grades correctly; what's still unverified is whether
    real roam-formed takes get sensible `resolves_when`/`deadline` values (the judge sets them, in
