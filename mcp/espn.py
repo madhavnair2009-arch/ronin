@@ -724,14 +724,25 @@ def _athlete(key, athlete_id):
     return data.get("athlete") or data
 
 
+def _ordinal(n):
+    n = int(n)
+    suffix = "th" if 10 <= n % 100 <= 20 else {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
+    return f"{n}{suffix}"
+
+
 def _experience_line(years):
     if years is None:
         return "Experience: not listed by ESPN — do NOT guess at it"
     if years <= 1:
         return "Experience: ROOKIE, first season"
-    n = int(years)
-    suffix = "th" if 10 <= n % 100 <= 20 else {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
-    return f"Experience: {n}{suffix} season — NOT a rookie"
+    return f"Experience: {_ordinal(years)} season — NOT a rookie"
+
+
+def _exp_short(years):
+    """Compact form for roster rows. Same 1-indexed convention as _experience_line."""
+    if years is None:
+        return "exp n/a"
+    return "ROOKIE" if years <= 1 else f"{_ordinal(years)} yr"
 
 
 def player(name, league=None):
@@ -780,6 +791,67 @@ def player(name, league=None):
     return "\n".join(lines)
 
 
+ROSTER_CAP = 70  # NFL camp rosters run ~90; bound the unfiltered dump, never silently
+
+
+def roster(league, query, position=None):
+    """A team's actual current roster, optionally filtered to one position group.
+
+    This exists because grounding the player someone ASKS about isn't enough: the wrong
+    facts come from the teammate ronin volunteers as color ("splitting carries with
+    <name>"), and that name comes from memory. Rosters turn over every offseason, so this
+    is where a player gets placed on a team they left. With this, "who's in that backfield"
+    is one grounded call instead of a recollection.
+    """
+    key = _league(league)
+    t = _resolve_team(key, query)
+    if not t:
+        raise SportError(f"No {_label(key)} team matching '{query}'.")
+    players = _roster(key, t["id"])
+    if not players:
+        return (f"{t.get('displayName', query)} ({_label(key)}): ESPN has no roster for them "
+                f"right now. Don't name players from memory.")
+    want = (position or "").strip().lower()
+    groups = {}
+    for a in players:
+        pos = a.get("position") or {}
+        name = pos.get("displayName") or pos.get("name") or "Unlisted"
+        abbrev = (pos.get("abbreviation") or "").lower()
+        # Match the abbrev exactly or a WHOLE WORD of the name — never a substring.
+        # "rb" is inside both "quarterback" and "cornerback", so a substring test hands
+        # back the QBs and CBs when you asked for running backs.
+        if want and not (want == abbrev or want == name.lower()
+                         or want in name.lower().split()):
+            continue
+        groups.setdefault(name, []).append(a)
+    if not groups:
+        seen = sorted({(a.get("position") or {}).get("abbreviation") or "?" for a in players})
+        return (f"{t.get('displayName')} ({_label(key)}): nobody listed at '{position}'. "
+                f"Positions on this roster: {', '.join(seen)}.")
+    shown = 0
+    out = [f"{t.get('displayName')} ({_label(key)})"
+           + (f" — {position} only" if want else f" — {len(players)} players")]
+    for name in sorted(groups):
+        rows = sorted(groups[name], key=lambda a: a.get("displayName", ""))
+        out.append(f"\n{name} ({len(rows)})")
+        for a in rows:
+            if shown >= ROSTER_CAP:
+                break
+            jersey = a.get("jersey")
+            bits = [b for b in (a.get("age") and f"{a['age']}",
+                                _exp_short((a.get("experience") or {}).get("years"))) if b]
+            out.append(f"  {'#' + str(jersey) + ' ' if jersey else ''}"
+                       f"{a.get('displayName', '?')} — {', '.join(bits)}")
+            shown += 1
+        if shown >= ROSTER_CAP:
+            break
+    total = sum(len(v) for v in groups.values())
+    if shown < total:
+        # Say what was dropped rather than let a truncated list read as the whole roster.
+        out.append(f"\n({shown} of {total} shown — ask for a position to see the rest)")
+    return "\n".join(out)
+
+
 # ---------------------------------------------------------------------------
 # MCP tool registry
 # ---------------------------------------------------------------------------
@@ -814,6 +886,34 @@ TOOLS = {
                         + " Optional — only pass it to disambiguate players who share a name.")),
                 },
                 "required": ["name"],
+            },
+        },
+    },
+    "sports_roster": {
+        "fn": lambda a: roster(a.get("league", ""), a.get("query", ""), a.get("position")),
+        "schema": {
+            "name": "sports_roster",
+            "description": "Who is ACTUALLY on a team right now, with each player's age and "
+                           "how many seasons they've played. Optionally filter to one "
+                           "position group. Use this whenever you're about to mention who "
+                           "else is on a team — a backfield, a rotation, a depth chart, "
+                           "'who do they have at X', 'who's he splitting time with'. "
+                           "Rosters turn over every offseason and your memory of them is a "
+                           "season or more stale, so look it up rather than recalling a "
+                           "teammate who has since moved on.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "league": _LEAGUE_PROP,
+                    "query": {"type": "string",
+                              "description": "Team name/city/abbrev (e.g. 'Broncos', 'DEN')."},
+                    "position": {"type": "string",
+                                 "description": "Optional position filter — an abbreviation "
+                                                "('RB', 'QB', 'C') or the full name ('running "
+                                                "back'). Strongly preferred for football, "
+                                                "where a full roster is ~90 players."},
+                },
+                "required": ["league", "query"],
             },
         },
     },

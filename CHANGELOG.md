@@ -5,6 +5,31 @@ architecture and `README.md` for how to run it.
 
 ---
 
+### sports_roster: closing the volunteered-teammate leak (2026-08-17)
+Grounding the player someone ASKS about was never enough — the wrong facts came from the
+teammate ronin volunteered as color. He'd put Javonte Williams (a Cowboy) in Denver's
+backfield because that's where his weights last saw him, and no tool could contradict it.
+
+- **`sports_roster(league, team, position?)`** returns who's actually on a team now, with age
+  and years for each, so a backfield or rotation is one grounded call. Reuses the `_roster`
+  helper `sports_player` already added, so both roster shapes (NFL position groups, NBA/WNBA
+  flat list) were handled for free.
+- **The position filter must match the abbrev exactly or a whole word of the position name.**
+  A substring test looks obviously fine and is not: "rb" is inside both "quarte*rb*ack" and
+  "corne*rb*ack", so asking for running backs returned the QBs and CBs. Shipped in the first
+  draft, caught on the first live call, now pinned by a test.
+- **Truncation is announced.** NFL camp rosters run ~90 and the cap is 70, so an over-cap
+  roster ends with "(70 of 93 shown — ask for a position to see the rest)". A silent cut
+  would read as the complete team, which is the same failure in a new costume.
+- Persona now says to pull the roster before describing a backfield, rotation, or depth
+  chart, and to make the point without a name if he won't look.
+- **4/4 clean on the prompt that produced the bug.** Every run named J.K. Dobbins, who is
+  really on Denver; one also named McLaughlin and Schrader, also real. The behavior case
+  derives its expectations from the live roster instead of hardcoding names, so it won't rot
+  when Denver signs someone.
+- *Residual:* ungrounded biographical color ("Dobbins' injury history") persists. Same class
+  as the old Thybulle "29 year old defensive wing" note — real, low-stakes, no tool covers it.
+
 ### Per-user personality: rolled taste lens + signature team (2026-08-16)
 Every user now gets their own ronin. The voice and the value floor stay GLOBAL — same guy,
 same persona, same seeded values. What's personal is a lens on top: three rolled taste

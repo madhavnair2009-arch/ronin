@@ -368,6 +368,15 @@ def _check_player_card(res):
     res.check("data", "sports_player is registered and reachable through the MCP registry",
               "sports_player" in espn.TOOLS
               and callable(espn.TOOLS["sports_player"]["fn"]))
+    res.check("data", "sports_roster is registered and reachable through the MCP registry",
+              "sports_roster" in espn.TOOLS
+              and callable(espn.TOOLS["sports_roster"]["fn"]))
+    res.check("data", "roster rows use the same 1-indexed rookie convention",
+              espn._exp_short(0) == "ROOKIE" and espn._exp_short(1) == "ROOKIE"
+              and espn._exp_short(2) == "2nd yr" and espn._exp_short(None) == "exp n/a")
+    res.check("data", "ordinals are right across the teen suffixes",
+              [espn._ordinal(n) for n in (1, 2, 3, 4, 11, 12, 13, 21)]
+              == ["1st", "2nd", "3rd", "4th", "11th", "12th", "13th", "21st"])
     # The firewall allowlists mcp__espn__*, so a new espn tool needs no firewall change —
     # but assert it, because a rule change there would silently disarm this fix.
     fw = open(os.path.join(ROOT, ".harness", "tool-firewall.sh"), encoding="utf-8").read()
@@ -805,6 +814,33 @@ def run_integration(res):
     except Exception as e:  # noqa: BLE001
         res.check("integration", "sports_player nba reachable", False, str(e))
 
+    # The roster tool — the grounded answer to "who else is in that backfield", which is
+    # where the volunteered-teammate hallucination came from.
+    try:
+        rb = espn.roster("nfl", "denver broncos", "RB")
+        groups = [ln for ln in rb.splitlines() if ln and not ln.startswith(("  ", "("))]
+        # Position filtering must be exact: "rb" is a substring of both "quarterback" and
+        # "cornerback", so a naive `in` test returns the QBs and CBs too. It did.
+        res.check("integration", "roster position filter is exact, not substring",
+                  len(groups) == 2 and "Running Back" in groups[1]
+                  and not any("back" in g.lower() and "running" not in g.lower()
+                              for g in groups[1:]), str(groups))
+        res.check("integration", "roster rows carry age + experience for grounding",
+                  "RJ Harvey" in rb and "2nd yr" in rb, rb[:120])
+    except Exception as e:  # noqa: BLE001
+        res.check("integration", "sports_roster reachable", False, str(e))
+
+    try:
+        full = espn.roster("nfl", "denver broncos")
+        # A truncated roster must SAY it's truncated — a silent cut reads as the whole team.
+        res.check("integration", "an over-cap roster announces what it dropped",
+                  ("shown" in full and "of" in full.split("shown")[0][-12:])
+                  or full.count("\n") < espn.ROSTER_CAP, full.splitlines()[-1])
+        res.check("integration", "an unknown position lists the real ones instead of empty",
+                  "nobody listed at" in espn.roster("nba", "detroit pistons", "goalie"))
+    except Exception as e:  # noqa: BLE001
+        res.check("integration", "sports_roster edge cases", False, str(e))
+
     try:
         miss = espn.player("Zzzq Notarealplayer")
         res.check("integration", "sports_player refuses an unknown name instead of inventing",
@@ -977,6 +1013,21 @@ def run_behavior(res):
                         # bot reading a readout. First pass leaked "per the tool" 2 of 3.
                         "per the tool", "the tool", "according to my data", "my data",
                         "let me check", "looked it up"])
+
+    # The volunteered-teammate leak: ronin used to place Javonte Williams (a Cowboy) in
+    # Denver's backfield as color. Expectations are derived from the LIVE roster rather
+    # than hardcoded, so this doesn't rot the moment Denver signs someone.
+    try:
+        _rb = espn.roster("nfl", "denver broncos", "RB")
+        _surnames = [ln.split("—")[0].split()[-1].lower()
+                     for ln in _rb.splitlines() if ln.startswith("  ")]
+        _run_case(res, "names a REAL teammate, not a remembered one",
+                  "who else is in the broncos backfield with rj harvey?",
+                  must_any=[s for s in _surnames if s and s != "harvey"],
+                  # Pinned historical failure: he left Denver, and ronin kept him there.
+                  must_not=["javonte"])
+    except Exception as e:  # noqa: BLE001
+        res.check("behavior", "roster-grounded teammate case set up", False, str(e))
 
     # It must ASK which NFL team, not answer about the NBA team it happens to have. The
     # must_any is the ask itself ("?" covers phrasings the enumerated list kept missing —

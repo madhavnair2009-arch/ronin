@@ -250,7 +250,25 @@ becomes a thing people screenshot. Design locked in a brainstorm (2026-08-16):
   existing users, or let the current global earned allegiances become his "default league read"
   that the personal team layers over.
 
-### 🔖 BOOKMARKED — the volunteered-teammate leak (open, deliberately deferred 2026-08-16)
+### ✅ CLOSED 2026-08-17 — the volunteered-teammate leak
+Fixed with option (b) below, the one flagged as the cheapest real win: **`sports_roster(league,
+team, position?)`**, so "who's in that backfield" is one grounded call instead of a recollection.
+Persona now tells him to pull the roster before describing any backfield/rotation/depth chart,
+and to make the point without a name if he won't look. **4/4 clean on the exact prompt that
+produced the bug** — every run named J.K. Dobbins (really on Denver), one also named McLaughlin
+and Schrader (also real). Zero Javonte Williams.
+
+Gotcha worth keeping: the position filter must match the abbrev exactly or a WHOLE WORD of the
+position name. A substring test returns quarterbacks and cornerbacks when you ask for "RB"
+(both words contain it) — that shipped in my first draft and is now pinned by a test.
+
+*Residual, minor:* he still volunteers ungrounded **biographical** color ("Dobbins' injury
+history"), which is the same class as the old Thybulle "29 year old defensive wing" note. Real
+but low-stakes, and no tool covers it.
+
+Original writeup below.
+
+### 🔖 (closed) the volunteered-teammate leak — original writeup
 **`sports_player` grounds the player someone ASKS about. It does not ground the player ronin
 brings up himself, and that's where he's still wrong.** Fixing the RJ Harvey "rookie" bug moved
 the defect rather than removing it: asked about Harvey, ronin now correctly says year 2 (6/6),
