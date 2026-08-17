@@ -32,6 +32,7 @@ import datetime
 import hashlib
 import json
 import sys
+import urllib.parse
 import urllib.request
 import urllib.error
 
@@ -643,6 +644,143 @@ def find_team(query, league=None):
 
 
 # ---------------------------------------------------------------------------
+# Players
+#
+# There was no player-level tool here at all, so every claim about a person — team, age,
+# position, how long they've played — came straight out of model weights with nothing
+# behind it. That is how ronin called RJ Harvey a "rookie" in August 2026, when Harvey
+# was drafted in 2025 and entering his second season: the weights are full of his
+# draft-year coverage, and knowing today's date doesn't correct a stale fact.
+#
+# ESPN's roster row carries experience.years = the season the player is ENTERING,
+# 1-indexed. Verified against known draft classes on 2026-08-16: Harvey (2025 draft) = 2,
+# Bo Nix (2024) = 3, Courtland Sutton (2018) = 9. Undrafted/camp bodies with no accrued
+# season come back as 0. So years <= 1 is a genuine first-season player and anything
+# higher is not a rookie. The athlete-detail endpoint does NOT carry this field (it
+# returns experience: null), which is why we go through the roster.
+# ---------------------------------------------------------------------------
+_ROSTER_CACHE = {}
+_SEARCH_URL = "https://site.web.api.espn.com/apis/search/v2?limit=8&query="
+# ESPN's search tags each player hit with a league label ("NFL"); map it back to our keys.
+_LABEL_TO_KEY = {v[2].lower(): k for k, v in LEAGUES.items()}
+
+
+def _roster(key, team_id):
+    # Two shapes in the wild: the NFL groups athletes by position ({"items": [...]}),
+    # the NBA/WNBA return a flat list of players. Handle both or every non-NFL lookup
+    # silently comes back "roster row unavailable".
+    ck = (key, str(team_id))
+    if ck not in _ROSTER_CACHE:
+        players = []
+        for grp in _get(f"{_base(key)}/teams/{team_id}/roster").get("athletes", []):
+            if not isinstance(grp, dict):
+                continue
+            if isinstance(grp.get("items"), list):
+                players.extend(grp["items"])
+            elif grp.get("displayName"):
+                players.append(grp)
+        _ROSTER_CACHE[ck] = players
+    return _ROSTER_CACHE[ck]
+
+
+def _search_player(name, league=None):
+    """ESPN global search -> best player hit {name, team, league, id}, or None."""
+    data = _get(_SEARCH_URL + urllib.parse.quote(name.strip()))
+    hits = []
+    for res in data.get("results", []):
+        if res.get("type") != "player":
+            continue
+        for c in res.get("contents", []):
+            uid = c.get("uid") or ""
+            hits.append({
+                "name": c.get("displayName") or name,
+                "team": c.get("subtitle") or "",
+                "league": _LABEL_TO_KEY.get((c.get("description") or "").strip().lower()),
+                "id": uid.split("~a:")[-1] if "~a:" in uid else "",
+            })
+    if not hits:
+        # ESPN's search wants the name spelled its way ("De'Von Achane"), so a dropped
+        # apostrophe misses outright. Retry on the surname, which resolves the same player.
+        parts = name.strip().split()
+        if len(parts) > 1:
+            return _search_player(parts[-1], league)
+        return None
+    if league:
+        want = _league(league)
+        for h in hits:
+            if h["league"] == want:
+                return h
+    return hits[0]
+
+
+def _athlete(key, athlete_id):
+    """Athlete detail — the fallback when a player isn't on the fetched roster (MLB's
+    endpoint returns only the 26-man active roster, so anyone on the IL is missing).
+    Carries team/position/age but NOT experience, which is why it's second choice."""
+    sport, path, _lbl = LEAGUES[key]
+    url = (f"https://site.web.api.espn.com/apis/common/v3/sports/{sport}/{path}"
+           f"/athletes/{athlete_id}")
+    data = _get(url)
+    return data.get("athlete") or data
+
+
+def _experience_line(years):
+    if years is None:
+        return "Experience: not listed by ESPN — do NOT guess at it"
+    if years <= 1:
+        return "Experience: ROOKIE, first season"
+    n = int(years)
+    suffix = "th" if 10 <= n % 100 <= 20 else {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
+    return f"Experience: {n}{suffix} season — NOT a rookie"
+
+
+def player(name, league=None):
+    """Verified player card. The grounding that stops invented biographical detail."""
+    if not (name or "").strip():
+        raise SportError("Give me a player name to look up.")
+    hit = _search_player(name, league)
+    if not hit:
+        return (f"ESPN has no player matching '{name}'. Say you can't find them — "
+                f"do NOT describe them from memory.")
+    key = hit["league"]
+    if not key:
+        return (f"{hit['name']} — {hit['team']}. ESPN lists them outside the leagues I "
+                f"cover, so I have no verified details. Don't state any.")
+    rec = None
+    t = _resolve_team(key, hit["team"]) if hit["team"] else None
+    if t:
+        for a in _roster(key, t["id"]):
+            if (hit["id"] and str(a.get("id")) == hit["id"]) or \
+                    (a.get("displayName", "").strip().lower() == hit["name"].strip().lower()):
+                rec = a
+                break
+    if rec is None and hit["id"]:
+        try:
+            rec = _athlete(key, hit["id"])
+        except Exception:  # noqa: BLE001 — detail is a bonus; absence must not error the tool
+            rec = None
+    lines = [f"{hit['name']} — {hit['team'] or 'team unlisted'} ({_label(key)})"]
+    if not rec:
+        lines.append("ESPN found them but has no current roster row for them, so age and "
+                     "experience are UNVERIFIED here. Don't state either from memory.")
+        return "\n".join(lines)
+    pos = (rec.get("position") or {}).get("displayName") or ""
+    jersey = rec.get("jersey")
+    if pos or jersey:
+        lines.append("Position: " + (pos or "unlisted") + (f" (#{jersey})" if jersey else ""))
+    if rec.get("age"):
+        lines.append(f"Age: {rec['age']}")
+    college = (rec.get("college") or {}).get("name")
+    if college:
+        lines.append(f"College: {college}")
+    lines.append(_experience_line((rec.get("experience") or {}).get("years")))
+    status = (rec.get("status") or {}).get("name")
+    if status:
+        lines.append(f"Status: {status}")
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
 # MCP tool registry
 # ---------------------------------------------------------------------------
 _LEAGUE_PROP = {
@@ -654,6 +792,31 @@ _LEAGUE_PROP = {
 }
 
 TOOLS = {
+    "sports_player": {
+        "fn": lambda a: player(a.get("name", ""), a.get("league")),
+        "schema": {
+            "name": "sports_player",
+            "description": "Verified facts about ONE player, straight from ESPN's current "
+                           "roster: their team, position, jersey, age, and how many seasons "
+                           "they have played (so you know whether someone is actually a "
+                           "rookie). Use this EVERY time you are about to state a fact about "
+                           "a specific player — what team they're on, how old they are, how "
+                           "experienced they are, whether they're a rookie or a veteran. "
+                           "Your own memory of players is out of date by a season or more; "
+                           "this tool is not.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string",
+                             "description": "The player's full name, e.g. 'RJ Harvey'."},
+                    "league": dict(_LEAGUE_PROP, description=(
+                        _LEAGUE_PROP["description"]
+                        + " Optional — only pass it to disambiguate players who share a name.")),
+                },
+                "required": ["name"],
+            },
+        },
+    },
     "sports_news": {
         "fn": lambda a: news(a.get("league", ""), a.get("limit", 12)),
         "schema": {

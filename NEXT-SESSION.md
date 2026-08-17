@@ -1,7 +1,7 @@
 # ronin — next-session handoff
 
 Cold-start brief for picking this back up. For the full architecture see `OVERVIEW.md`,
-for the build log see `CHANGELOG.md`. Last worked: **2026-07-23**.
+for the build log see `CHANGELOG.md`. Last worked: **2026-08-16**.
 
 ---
 
@@ -24,8 +24,25 @@ autonomous **roam** loop (forms takes, proactively pings, reflects on allegiance
   (digest `31f9f82af7024d4a`); both `claude-opus-4-8` and `claude-sonnet-5` confirmed reachable on
   it. **Still TODO (user):** revoke the OLD key at console.anthropic.com, set a workspace spend
   limit, update local `~/ronin/.env`.
-- **No open correctness bugs.** The grader is proven end-to-end. Next up: confirm real roam takes
-  get `deadline`s set (item 1), and the key housekeeping above.
+- **Two live-reported bugs fixed 2026-08-16 (found from the user's own Telegram screenshots —
+  both were invisible to a green 71/71 harness).** Harness now **92/92** (12 new data checks,
+  4 integration, 1 behavior).
+  1. **Repeated storyline content.** Ronin pinged about Don Nelson's death (Aug 9) and again
+     about his memorial (Aug 14). The second ping was *right* to send — the complaint was that it
+     re-explained nellieball to someone already told. Cause: the judge composed each message
+     against `memory.recent_sent`'s **48h** default, so at Aug 14 the Aug 9 ping (~114h back) was
+     invisible and it re-derived the background. The "don't repeat" rule was followed correctly
+     against a silently truncated context. Judge now has its own window (`JUDGE_RECALL_SECS`
+     14d, `JUDGE_RECALL_N` 12); **chat stays at 48h on purpose** — that window is tuned for
+     follow-up resolution, and a test pins it so nobody "fixes" it.
+  2. **Player facts had no tool at all.** Ronin called RJ Harvey a "rookie" in his second season.
+     There was no player-level tool, so every claim about a person came from model weights;
+     the dateline injection can't help, since knowing the date doesn't update a stale fact.
+     Added **`sports_player`** (search → roster → athlete-detail fallback, all 6 leagues).
+- **Still open:** the volunteered-teammate leak (see the 🔖 bookmark below) — grounded on the
+  player asked about, still fallible on the player ronin names himself.
+- The grader is proven end-to-end. Next up: confirm real roam takes get `deadline`s set
+  (item 1), and the key housekeeping above.
 
 ---
 
@@ -208,6 +225,30 @@ becomes a thing people screenshot. Design locked in a brainstorm (2026-08-16):
   mutually-exclusive pairs (can't be both methodical + chaotic); (c) migration — freshly roll all
   existing users, or let the current global earned allegiances become his "default league read"
   that the personal team layers over.
+
+### 🔖 BOOKMARKED — the volunteered-teammate leak (open, deliberately deferred 2026-08-16)
+**`sports_player` grounds the player someone ASKS about. It does not ground the player ronin
+brings up himself, and that's where he's still wrong.** Fixing the RJ Harvey "rookie" bug moved
+the defect rather than removing it: asked about Harvey, ronin now correctly says year 2 (6/6),
+but he volunteered *"splitting carries with Javonte Williams"* — **Williams is a Dallas Cowboy.**
+The color detail is the trap, because it's the part nobody thinks to look up.
+
+- **Current mitigation is a persona rule** ("look up anyone you're about to name, or make the
+  point without the name") + a ban on narrating the tool. It went 3/3 clean on re-test, then
+  leaked again in the full harness run. So: improved, **not solved**, and prompt rules hold only
+  probabilistically — the same lesson as the matchup fix (2/4 → 5/5).
+- **Why there's no quick deterministic fix.** The `<thinking>`/em-dash guards work because they
+  match a *shape* at the boundary. A wrong teammate is well-formed prose; catching it means
+  validating every name in a reply against the roster it's asserted to be on, and the reply
+  rarely names that roster explicitly. That's a real design problem, not a patch.
+- **Directions worth weighing:** (a) boundary pass that extracts player names and verifies each
+  via `sports_player`, rewriting or dropping unverified ones — expensive, needs NER; (b) a
+  `sports_roster(league, team)` tool so "who's in that backfield" is one grounded call, which
+  removes the *need* to recall a teammate; (c) accept it and lean harder on "make the point
+  without the name." **(b) is the cheapest real win** and reuses the `_roster` helper already
+  added in `mcp/espn.py`.
+- **Repro:** `reply(uid, "quick take on rj harvey for my fantasy team")` a few times and watch
+  whether any *other* player gets named. Verify each with `espn.player(name)`.
 
 1. **Watch calibration in the wild — now the *mechanism* is proven, the open question is the
    judge's inputs.** The grader fires and grades correctly; what's still unverified is whether

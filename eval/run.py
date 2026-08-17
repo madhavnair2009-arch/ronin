@@ -221,6 +221,84 @@ def run_data(res):
     _check_roam_retry(res)
     _check_shared_cursor(res)
     _check_thinking_strip(res)
+    _check_judge_recall(res)
+    _check_player_card(res)
+
+
+def _check_judge_recall(res):
+    """A developing story gets pinged more than once (right), but the judge composed each
+    ping against memory.recent_sent's 48h default (wrong). The Don Nelson memorial ping on
+    2026-08-14 could not see the death ping from 2026-08-09 (~114h earlier), so it
+    re-explained nellieball to someone who'd already been told. The judge needs a window
+    measured in the life of a STORY, not the life of a chat follow-up."""
+    import roam
+    memory._write("outbound.json", {})
+    now = time.time()
+    memory._update("outbound.json", lambda d: d.setdefault("sent", []).extend([
+        {"uid": "mJ", "key": "nelson-dies", "text": "don nelson passed away at 86, nellieball",
+         "at": now - 114 * 3600},                      # the Aug 9 ping: ~4.75 days back
+        {"uid": "mJ", "key": "cup", "text": "nba cup schedule's out", "at": now - 43 * 3600},
+    ]), {})
+
+    # The chat path's window is deliberately unchanged — 48h is right for resolving a
+    # follow-up. This asserts the old behavior still holds there, i.e. the bug was real.
+    chat_texts = [p["text"] for p in memory.recent_sent("mJ")]
+    res.check("data", "chat's 48h window still drops the 5-day-old ping (unchanged)",
+              len(chat_texts) == 1 and "cup" in chat_texts[0])
+
+    recalled = roam._recent_texts("mJ", n=roam.JUDGE_RECALL_N,
+                                 within_secs=roam.JUDGE_RECALL_SECS)
+    res.check("data", "judge recall reaches back past 48h to the same storyline",
+              any("nellieball" in t for t in recalled), f"recalled {recalled}")
+
+    # Drive the real _judge body, stubbing only the graff call, and assert the old ping
+    # actually reaches the prompt. This is what fails against the pre-fix code.
+    real_run = roam.subprocess.run
+    seen = {}
+
+    class _Out:
+        returncode = 0
+        stdout = '{"notable": false, "message": "", "take": null}'
+        stderr = ""
+
+    try:
+        def fake_run(cmd, **kw):
+            seen["prompt"] = cmd[-1]
+            return _Out()
+        roam.subprocess.run = fake_run
+        roam._judge("mJ", "Golden State Warriors", "nba",
+                    {"key": "memorial", "headline": "Don Nelson memorialized in Dallas",
+                     "desc": "Dirk and Carlisle attended."})
+    finally:
+        roam.subprocess.run = real_run
+    res.check("data", "the judge prompt carries what it already said about the storyline",
+              "nellieball" in seen.get("prompt", ""))
+
+
+def _check_player_card(res):
+    """Player facts had NO tool behind them, so ronin called RJ Harvey a rookie in his
+    second season. ESPN's experience.years is the season being ENTERED, 1-indexed
+    (verified: Harvey/2025 draft = 2, Nix/2024 = 3, Sutton/2018 = 9), so <= 1 is a real
+    rookie. Getting this backwards would just invert the bug, hence the pinned check."""
+    line = espn._experience_line
+    res.check("data", "experience 1 reads as a rookie",
+              "ROOKIE" in line(1) and "NOT a rookie" not in line(1))
+    res.check("data", "experience 0 (undrafted, no accrued season) reads as a rookie",
+              "ROOKIE" in line(0))
+    res.check("data", "experience 2 reads as a 2nd-season non-rookie (the RJ Harvey case)",
+              "2nd season" in line(2) and "NOT a rookie" in line(2))
+    res.check("data", "experience 9 ordinal is right", "9th season" in line(9))
+    res.check("data", "experience 11 ordinal is right (teen suffix)", "11th season" in line(11))
+    res.check("data", "missing experience refuses instead of guessing",
+              "not listed" in line(None) and "do NOT guess" in line(None))
+    res.check("data", "sports_player is registered and reachable through the MCP registry",
+              "sports_player" in espn.TOOLS
+              and callable(espn.TOOLS["sports_player"]["fn"]))
+    # The firewall allowlists mcp__espn__*, so a new espn tool needs no firewall change —
+    # but assert it, because a rule change there would silently disarm this fix.
+    fw = open(os.path.join(ROOT, ".harness", "tool-firewall.sh"), encoding="utf-8").read()
+    res.check("data", "tool firewall still allows the espn server wholesale",
+              "mcp__espn__*" in fw)
 
 
 def _check_sentiment_sweep(res):
@@ -610,17 +688,55 @@ def run_integration(res):
                 return None
             mo, d = int(m.group(1)), int(m.group(2))
             return (mo if mo >= 8 else mo + 12, d)
+        # Two shapes come back and both are correct. When games are on TODAY the header
+        # says "(today)" and the lines carry no date or weekday (they're live/final right
+        # now, so there's nothing to disambiguate). Only when the window is future-dated
+        # does each line get a weekday + M/D. The old check assumed the future-dated shape
+        # unconditionally, so it went red on any day with a live slate — a test bug, not a
+        # product one. Assert whichever contract actually applies.
         sb = espn.scoreboard("nfl")
-        games = [ln for ln in sb.splitlines() if "@" in ln and "/" in ln]
+        games = [ln for ln in sb.splitlines() if "@" in ln]
         first = games[0] if games else ""
         dated = [g for g in (_season_md(ln) for ln in games) if g]
-        has_weekday = any(w in first for w in
-                          ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"))
-        earliest_first = all(dated[i] <= dated[i + 1] for i in range(len(dated) - 1))
-        res.check("integration", "nfl scoreboard: earliest game first, with weekday",
-                  bool(dated) and has_weekday and earliest_first, first)
+        if dated:
+            has_weekday = any(w in first for w in
+                              ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"))
+            earliest_first = all(dated[i] <= dated[i + 1] for i in range(len(dated) - 1))
+            res.check("integration", "nfl scoreboard: earliest game first, with weekday",
+                      has_weekday and earliest_first, first)
+        else:
+            res.check("integration", "nfl scoreboard: today's slate returns games",
+                      bool(games) and "today" in sb.splitlines()[0].lower(), first)
     except Exception as e:  # noqa: BLE001
         res.check("integration", "nfl scoreboard reachable", False, str(e))
+
+    # Player grounding against the live roster. Assert the SHAPE plus one fact that can't
+    # drift the wrong way: a player's season count only ever goes up, so someone already
+    # past their rookie year can never read as a rookie again.
+    try:
+        card = espn.player("RJ Harvey")
+        res.check("integration", "sports_player: RJ Harvey resolves with real roster fields",
+                  has_all(low(card), "rj harvey", "broncos", "running back"), card[:90])
+        res.check("integration", "sports_player: a 2nd-season back is NOT called a rookie",
+                  "NOT a rookie" in card and "ROOKIE," not in card, card)
+    except Exception as e:  # noqa: BLE001
+        res.check("integration", "sports_player reachable", False, str(e))
+
+    try:
+        # Non-NFL rosters come back in a different shape (flat list vs position groups);
+        # this is what caught every non-NFL lookup silently returning "unverified".
+        curry = espn.player("Stephen Curry", "nba")
+        res.check("integration", "sports_player: nba roster shape parses (flat list)",
+                  has_all(low(curry), "curry", "warriors") and "season" in curry, curry[:90])
+    except Exception as e:  # noqa: BLE001
+        res.check("integration", "sports_player nba reachable", False, str(e))
+
+    try:
+        miss = espn.player("Zzzq Notarealplayer")
+        res.check("integration", "sports_player refuses an unknown name instead of inventing",
+                  has_all(low(miss), "no player matching"), miss[:90])
+    except Exception as e:  # noqa: BLE001
+        res.check("integration", "sports_player unknown-name path", False, str(e))
 
     try:
         res.check("integration", "champion(ucl) = PSG (2025-26)",
@@ -750,6 +866,23 @@ def run_behavior(res):
               "what day is the patriots seahawks game",
               must_any=["wednesday", "wed ", "9/9", "sept 9", "september 9"],
               must_not=["can't pin", "cant pin", "preseason mode", "can't find", "cant find"])
+
+    # The live bug, verbatim: asked to rate a fantasy draft, ronin called RJ Harvey a
+    # "rookie" in his second season (2026-08-14). There was no player tool at all then, so
+    # the claim came straight from weights — and the model is confident about it, which is
+    # why this needs a model-in-the-loop case and not just the data check on the formatter.
+    # Assert the corrected fact appears rather than banning "rookie": the right answer
+    # often contains the word ("he's not a rookie anymore").
+    _run_case(res, "player experience is looked up, not recalled (the RJ Harvey case)",
+              "quick take on rj harvey for my fantasy team",
+              must_any=["second season", "2nd season", "second year", "2nd year",
+                        "not a rookie", "no longer a rookie", "sophomore", "year two"],
+              must_not=["he's a rookie", "hes a rookie", "rookie back", "rookie rb",
+                        "as a rookie he", "rookie season for him",
+                        # grounding must stay invisible: he's a guy who follows it, not a
+                        # bot reading a readout. First pass leaked "per the tool" 2 of 3.
+                        "per the tool", "the tool", "according to my data", "my data",
+                        "let me check", "looked it up"])
 
     # It must ASK which NFL team, not answer about the NBA team it happens to have. The
     # must_any is the ask itself ("?" covers phrasings the enumerated list kept missing —

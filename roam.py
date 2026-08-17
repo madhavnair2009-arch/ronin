@@ -84,6 +84,16 @@ MAX_PER_USER = int(os.environ.get("ROAM_MAX_PER_USER", "1"))     # msgs per user
 PROACTIVE_MIN_GAP = int(os.environ.get("ROAM_MIN_GAP", "21600"))  # 6h between pings/user
 HEADLINES_PER_TEAM = int(os.environ.get("ROAM_HEADLINES", "8"))
 TURN_TIMEOUT = int(os.environ.get("ROAM_TURN_TIMEOUT", "90"))
+# How far back the JUDGE can see its own past pings when deciding what to say. This is
+# deliberately NOT memory.recent_sent's 48h default: that window is tuned for the CHAT
+# path, where the job is resolving a follow-up ("who's funding it?") against a recent
+# ping. The judge's job is the opposite — avoid re-telling a storyline it already told —
+# and news stories develop over a week or more. At 48h the Don Nelson memorial ping
+# (2026-08-14) could not see the death ping (2026-08-09, ~114h earlier), so it re-explained
+# nellieball from scratch to someone who'd already been told. Two weeks covers a
+# developing story; n is raised too so a busy stretch can't crowd the storyline out.
+JUDGE_RECALL_SECS = int(os.environ.get("ROAM_JUDGE_RECALL", str(14 * 86400)))
+JUDGE_RECALL_N = int(os.environ.get("ROAM_JUDGE_RECALL_N", "12"))
 
 ROAM_ADDENDUM = """
 ## ROAM MODE (you are NOT replying to anyone right now)
@@ -93,7 +103,7 @@ own beliefs as you go.
 
 You will be given: the person's team, ONE new news item (headline + blurb — this is your
 ground-truth fact, don't invent stats beyond it), your current take on this storyline (or
-"none"), and things you've recently told them (don't repeat).
+"none"), and what you've already texted them (treat it as said out loud, not as a draft).
 
 Return STRICT JSON, nothing else, in this exact shape:
 {
@@ -115,6 +125,13 @@ Rules:
   human, lowercase-friendly. React with YOUR read — you are NOT a hive-mind mirror. No
   "Hey!", no "Just wanted to let you know", no emoji spam. Text a friend, not a push
   notification. Reference the actual news; don't state scores/records you weren't given.
+- CONTINUING A STORYLINE you already texted them about is fine and often right — a story
+  develops and the update is worth sending. But you are picking up a conversation, not
+  starting one. LEAD with what is actually new in this item, and do NOT re-explain
+  background, history, or context you already gave them: no re-introducing who someone is,
+  no repeating why they mattered, no restating the same career facts. Assume they read
+  every message listed above and remember it. If, after you strip everything you've already
+  said, there's no real new information left, that's notable: false.
 - "take": if this news forms or MOVES a belief, return the updated take (revise your prior
   stance if you were given one — it's fine to say your confidence shifted). If it doesn't
   touch a belief, return null.
@@ -196,8 +213,11 @@ def _existing_take(subject_team):
     return None
 
 
-def _recent_texts(uid, n=5):
-    return [p["text"] for p in memory.recent_sent(uid, n=n)]
+def _recent_texts(uid, n=5, within_secs=None):
+    kw = {"n": n}
+    if within_secs is not None:
+        kw["within_secs"] = within_secs
+    return [p["text"] for p in memory.recent_sent(uid, **kw)]
 
 
 def _extract_json(text):
@@ -232,7 +252,8 @@ def _judge(uid, team, league, headline):
         "new_news_item": f"{headline['headline']} — {headline['desc']}".strip(" —"),
         "your_current_take_on_this_storyline": prior_str,
         "your_existing_take_topics_reuse_the_slug_if_it_fits": existing or ["(none yet)"],
-        "things_you_recently_told_them": _recent_texts(uid) or ["(nothing yet)"],
+        "what_you_already_texted_them_do_not_re_explain_any_of_this": _recent_texts(
+            uid, n=JUDGE_RECALL_N, within_secs=JUDGE_RECALL_SECS) or ["(nothing yet)"],
     }
     system_prompt = _dateline() + _load_persona() + "\n" + ROAM_ADDENDUM
     cmd = [

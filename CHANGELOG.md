@@ -5,6 +5,52 @@ architecture and `README.md` for how to run it.
 
 ---
 
+### Two live-reported bugs: repeated storyline content + ungrounded player facts (2026-08-16)
+Both came from the user's own Telegram screenshots, and both were invisible to a green 71/71
+harness — a reminder that the tests only look where we've already been burned.
+
+- **Repeated storyline content.** Ronin pinged about Don Nelson's death (Aug 9) and again about
+  his Dallas memorial (Aug 14). The second ping deserved to be sent; the problem was that it
+  re-explained nellieball and "second-winningest coach" to someone who'd already been told.
+  - **Not a dedup failure.** The headline hash (`sha1(headline)[:12]`) is *supposed* to let a
+    genuinely new article through — ESPN ran three separate Nelson stories and the memorial was
+    real news. Suppressing it would have been the wrong fix.
+  - **Cause: a 48h context window.** `_judge` builds `things_you_recently_told_them` from
+    `memory.recent_sent`, whose 48h default is tuned for the CHAT path (resolving a follow-up
+    against a recent ping). At judge time on Aug 14 the Aug 9 ping was ~114h old and simply
+    absent, so the model re-derived the background it had already sent. The anti-repeat rule was
+    obeyed — against a silently truncated context. Same family as the shared-cursor bug: correct
+    logic, starved of its input.
+  - **Fix:** the judge gets its own window (`JUDGE_RECALL_SECS` 14d, `JUDGE_RECALL_N` 12, both
+    env-overridable) sized to the life of a *story*, not a chat follow-up. Chat stays at 48h
+    deliberately, with a test pinning that. Prompt now says continuing a storyline is fine and
+    often right, but lead with what's new, don't re-explain, and if nothing new survives that
+    strip, `notable: false`. Regression-proven: at `ROAM_JUDGE_RECALL=172800` the new checks fail
+    with the exact live symptom (`recalled ["nba cup schedule's out"]`).
+
+- **Ungrounded player facts — ronin called RJ Harvey a "rookie" in his second season.** There was
+  no player-level tool at all, so the persona's "facts come from tools" rule had nothing to call:
+  team, age, position and experience all came out of model weights, which are saturated with a
+  player's draft-year coverage. **The dateline injection does not help** — knowing today's date
+  tells you when it is, not what's changed since.
+  - **New `sports_player` tool:** ESPN global search → team roster row → athlete-detail fallback.
+    Works across all six leagues. Two roster shapes in the wild (NFL groups by position, NBA/WNBA
+    return a flat list); handling only the first made every non-NFL lookup silently "unverified".
+    MLB's endpoint returns just the 26-man active roster, so anyone on the IL needs the
+    athlete-detail fallback — which carries team/position/age but NOT experience.
+  - **`experience.years` is the season being ENTERED, 1-indexed**, verified against known draft
+    classes before writing the formatter (Harvey/2025 = 2, Nix/2024 = 3, Sutton/2018 = 9); `<= 1`
+    is a real rookie. Pinned in a data test, since inverting it would just flip the bug.
+  - **Fixed twice.** The first pass was factually right but leaked the plumbing ("per the tool
+    this is actually his 2nd season") and volunteered a teammate — "splitting carries with Javonte
+    Williams", who is a **Cowboy**. Persona now covers every player *named*, not just the one
+    asked about, and bans narrating the lookup. 6/6 on the fact; the teammate leak is improved,
+    **not solved**, and is bookmarked in `NEXT-SESSION.md`.
+
+- **Also fixed a brittle test** that had gone red on main: the NFL scoreboard check assumed
+  future-dated lines, but a slate playing *today* renders with no dates or weekdays, so it parsed
+  zero games. Asserts whichever of the two valid shapes applies. Harness **92/92**.
+
 ### Per-path model routing + a deterministic em-dash guard (2026-07-29)
 Groundwork for running on many testers without Opus-on-everything. Every graff call now picks
 its own model, so the volume drivers get a cheap tier and the rare quality passes stay strong.
