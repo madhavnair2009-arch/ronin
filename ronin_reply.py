@@ -98,6 +98,16 @@ def _load_system_prompt(sender_id=None):
         for a in dislikes:
             lines.append(f"- 💢 **{a['team']}** ({a['league'].upper()}): {a['stance']}")
         persona += "\n" + "\n".join(lines) + "\n"
+    # WHO THIS PERSON'S RONIN IS: the rolled taste lens + signature team. Layered on top
+    # of the global persona and the global allegiances above, never replacing them — same
+    # voice, same values, personal flavor. Rolled once, on first contact, then it's a
+    # dict read. A user whose roll hasn't landed yet just gets the global ronin.
+    if sender_id is not None:
+        try:
+            import character
+            persona += character.prompt_block(character.ensure(sender_id))
+        except Exception as e:  # noqa: BLE001 — a failed roll must never cost them a reply
+            print(f"[reply] character layer skipped: {e}", file=sys.stderr)
     # You: relationship memory so ronin talks like it knows this person. A person can
     # follow one team per league (e.g. 49ers in NFL AND Warriors in NBA), so list them
     # all and let ronin pick the right one for whatever sport comes up.

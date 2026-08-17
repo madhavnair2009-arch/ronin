@@ -193,7 +193,31 @@ the Spain take a HIT off the real tool, conf 0.6→0.7, wrote a grounded `calibr
 Synthetic take + record restored from backup afterward (the volume must never carry a fake
 "1-0, nailed the Spain call"). Harness **71/71**.
 
-### ⭐ NEXT BUILD — per-user personality (rolled team + taste lens)
+### ✅ BUILT 2026-08-16 — per-user personality (rolled team + taste lens)
+**Code complete, harness green, NOT yet deployed** (awaiting sign-off on the trait vocab).
+Lives in `character.py`; storage is `memory.get_character`/`set_character`; injected by
+`ronin_reply._load_system_prompt` via `character.prompt_block`. Kill switch `RONIN_CHARACTER=0`
+returns everyone to the single global ronin.
+
+The three open decisions were settled: **one signature team total** (not per league),
+**3 traits with exclusivity**, and **global affinities stay global** with the personal team
+layered on top. That last one reverses the spec bullet below: `reflect()` is O(leagues), and
+per-user affinities would make it O(users x leagues) — the exact cost cliff the Sonnet routing
+work was built to avoid, and it contradicted the spec's own "no per-user daily reflection".
+So affinities were NOT uid-namespaced; only the rolled character is per-user.
+
+Two things worth knowing:
+- **Exclusivity needed more than one-trait-per-axis.** "methodical" (tempo) and "chaotic"
+  (temperament) sit on different axes but mean opposite things, so the first implementation
+  rolled both. There's now an explicit `CONFLICTS` list + rejection sampling. 153 distinct
+  coherent combinations.
+- **The roll prefers a league the user already follows**, excluding their own team, because
+  the banter only lands in a shared sport. Falls back to `RONIN_HOME_LEAGUE` (nba) if they
+  haven't set a team yet.
+
+Original spec, kept for context:
+
+### ⭐ (original spec) per-user personality (rolled team + taste lens)
 Make ronin's *personality* personal, not just his memory. Today he's one global character with
 one earned allegiance set (the "it knows you" lock-in is only half-built). Give each user a ronin
 with his *own* team and taste, so "my ronin rides with the Thunder, yours is a star-power junkie"

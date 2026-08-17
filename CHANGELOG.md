@@ -5,6 +5,36 @@ architecture and `README.md` for how to run it.
 
 ---
 
+### Per-user personality: rolled taste lens + signature team (2026-08-16)
+Every user now gets their own ronin. The voice and the value floor stay GLOBAL — same guy,
+same persona, same seeded values. What's personal is a lens on top: three rolled taste
+descriptors and one signature team those descriptors picked out of real standings.
+
+- **One cheap call, once per user, forever.** `character.ensure(uid)` rolls three traits in
+  code, then makes a single graff call (cheap tier) grounded in live standings to match them
+  to a team. After that it's a dict read. There is deliberately **no per-user reflection**:
+  `reflect()` stays O(leagues) and keeps producing the global allegiances that give ronin
+  live opinions, so cost still tracks leagues rather than signups.
+- **Global affinities stayed global.** The original spec called for uid-namespacing them
+  "like the shared-cursor fix". That would have made reflection O(users x leagues) on a
+  schedule — the cliff the model-routing work was built to avoid — and contradicted the same
+  spec's "no per-user daily reflection". Only the rolled character is per-user.
+- **Exclusivity needed cross-axis conflicts, not just one-per-axis.** The vocab is grouped
+  into axes (tempo, roster-building, temperament, identity, arc) and the roll takes one trait
+  from each of three different axes. That alone still produced "methodical + chaotic" — same
+  meaning clash, different axes — so there's an explicit `CONFLICTS` list with rejection
+  sampling. 153 distinct coherent combinations from 13 traits.
+- **The roll prefers a league the user already follows and excludes their own team**, because
+  the banter engine only fires in a shared sport ("you're warriors though right? we're gonna
+  have words eventually"). Falls back to `RONIN_HOME_LEAGUE` (nba) when they have no team yet.
+- **Write-once by design.** `set_character` refuses to overwrite — the roll is supposed to
+  feel like fate, so there's no reroll. Stored as a sibling of `profile`, not inside it,
+  because `set_profile` replaces the whole profile dict every digest pass and would wipe it.
+- **Grounding guard** mirrors reflect's: the picked team is resolved through ESPN and dropped
+  if it isn't really in that league, so the model can't invent a squad.
+- Kill switch `RONIN_CHARACTER=0` removes the lens and blocks new rolls. The eval harness
+  seeds a character per case rather than paying for a live roll on every unrelated test.
+
 ### Two live-reported bugs: repeated storyline content + ungrounded player facts (2026-08-16)
 Both came from the user's own Telegram screenshots, and both were invisible to a green 71/71
 harness — a reminder that the tests only look where we've already been burned.

@@ -225,6 +225,42 @@ def set_profile(uid, profile, digested_ms=None):
 
 
 # ---------------------------------------------------------------------------
+# Axis: WHO *THEIR* RONIN IS — the per-user character (rolled traits + signature team)
+#
+# Deliberately a sibling of `profile`, not a field inside it: `set_profile` REPLACES the
+# whole profile dict every digest pass, so a character stored in there would be wiped
+# every ~4h. This is also write-once by design — the roll is meant to feel like fate, so
+# `set_character` refuses to overwrite an existing one rather than silently re-rolling.
+# Global affinities stay global (reflect() is O(leagues), and per-user reflection would
+# make it O(users x leagues)); this is the personal layer that sits on top of them.
+# ---------------------------------------------------------------------------
+def get_character(uid):
+    return (get_user(uid) or {}).get("character") or {}
+
+
+def set_character(uid, traits, league, team, abbrev, reasoning=""):
+    """Persist a user's rolled ronin. No-op if they already have one (write-once)."""
+    uid = str(uid)
+    if get_character(uid):
+        return False
+    rec = {
+        "traits": [str(t).strip() for t in (traits or []) if str(t).strip()],
+        "league": (league or "").strip().lower(),
+        "team": (team or "").strip(),
+        "abbrev": (abbrev or "").strip().upper(),
+        "reasoning": str(reasoning or "").strip(),
+        "rolled_at": time.time(),
+    }
+    if not (rec["traits"] and rec["team"] and rec["league"]):
+        return False
+
+    def go(d):
+        d.setdefault(uid, {}).setdefault("character", rec)
+    _update("relationships.json", go, {})
+    return True
+
+
+# ---------------------------------------------------------------------------
 # Axis: ITS BELIEFS (takes) — revision, not append; keep history
 # ---------------------------------------------------------------------------
 def _seed_takes_from_file():

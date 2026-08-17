@@ -20,6 +20,7 @@ Behavior needs ~/bin/graff + ANTHROPIC_API_KEY (read from ./.env like the bot).
 
 import datetime
 import os
+import random
 import re
 import sys
 import tempfile
@@ -223,6 +224,67 @@ def run_data(res):
     _check_thinking_strip(res)
     _check_judge_recall(res)
     _check_player_card(res)
+    _check_character(res)
+
+
+def _check_character(res):
+    """Per-user personality: three rolled traits + one signature team, layered over the
+    global persona. The roll must never contradict itself, must never be re-rolled (it's
+    meant to feel like fate), and must survive a digest pass."""
+    import character as C
+    import ronin_reply
+
+    # Coherence: one trait per axis AND no cross-axis contradiction. Same-axis pairs can't
+    # co-occur by construction; the cross-axis ones (methodical+chaotic) needed a rule.
+    bad = []
+    for i in range(400):
+        tr = C.roll_traits(random.Random(i))
+        axes = [g for t in tr for g, d in C.VOCAB.items() if t in d]
+        if len(tr) != C.TRAIT_COUNT or len(set(axes)) != len(axes) or not C._coherent(tr):
+            bad.append(tr)
+    res.check("data", "rolled traits never contradict (one per axis, no conflicting pair)",
+              not bad, f"{len(bad)} bad rolls e.g. {bad[:2]}")
+    res.check("data", "every conflicting pair is actually rejected",
+              all(not C._coherent(list(p)) for p in C.CONFLICTS))
+    res.check("data", "the vocab is big enough to not clone everyone",
+              len({tuple(C.roll_traits(random.Random(i))) for i in range(400)}) > 50)
+
+    # Write-once: the roll is fate, not a preference. A second call must not change it.
+    memory._write("relationships.json", {})
+    memory.set_character("c1", ["electric"], "nba", "Miami Heat", "MIA", "why")
+    res.check("data", "a character round-trips",
+              memory.get_character("c1").get("team") == "Miami Heat")
+    res.check("data", "set_character refuses to re-roll an existing character",
+              memory.set_character("c1", ["steady"], "nba", "Utah Jazz", "UTA") is False
+              and memory.get_character("c1")["team"] == "Miami Heat")
+    res.check("data", "an incomplete character is rejected outright",
+              memory.set_character("c2", [], "nba", "", "") is False)
+
+    # The digest REPLACES the whole profile dict every ~4h. A character stored inside it
+    # would be silently wiped; this is why it's a sibling key, and this pins that.
+    memory.set_profile("c1", {"bits": ["always says 'ship it'"]})
+    res.check("data", "a digest pass can't wipe the character",
+              memory.get_character("c1").get("team") == "Miami Heat"
+              and memory.get_profile("c1").get("bits"))
+
+    # The lens is LAYERED: the global persona and its values must still be present.
+    memory.set_team("c1", "nba", "Golden State Warriors", "GSW", chat_id=1)
+    sp = ronin_reply._load_system_prompt("c1")
+    res.check("data", "the taste lens reaches the chat prompt",
+              "Miami Heat" in sp and "electric" in sp)
+    res.check("data", "the lens layers OVER the global persona, never replacing it",
+              "never blur facts and opinions" in sp and "Golden State Warriors" in sp)
+    res.check("data", "ronin's team is marked as HIS, distinct from theirs",
+              "not theirs" in sp)
+
+    # Kill switch: flipping it off returns everyone to the single global ronin.
+    real = C.ENABLED
+    try:
+        C.ENABLED = False
+        res.check("data", "kill switch removes the lens and blocks new rolls",
+                  C.prompt_block(memory.get_character("c1")) == "" and C.ensure("c9") == {})
+    finally:
+        C.ENABLED = real
 
 
 def _check_judge_recall(res):
@@ -795,7 +857,7 @@ def _seed_clear():
 
 
 def _run_case(res, name, message, seed=None, must=None, must_not=None, must_any=None,
-              proactive=None, seed_sender=None):
+              proactive=None, seed_sender=None, character=None):
     import ronin_reply
     _seed_clear()
     if seed:
@@ -803,6 +865,14 @@ def _run_case(res, name, message, seed=None, must=None, must_not=None, must_any=
     sender = f"eval_{abs(hash(name)) % 10**8}_{int(datetime.datetime.now().timestamp())}"
     if seed_sender:  # per-user seeding that needs the generated sender id (profile, teams)
         seed_sender(sender)
+    # Every case uses a fresh sender, so without this each one would trigger a live
+    # character roll — an extra graff call per case, testing nothing the case is about.
+    # Seed one instead: the taste lens is still in the prompt (realistic), for free.
+    # `character="roll"` opts a case into exercising the real roll.
+    if character != "roll":
+        memory.set_character(sender, ["defense-first", "home-grown", "steady"],
+                             "nba", "San Antonio Spurs", "SA",
+                             "young core that actually guards, built not bought")
     if proactive:  # simulate a roam ping this user is now replying to
         memory.log_sent(sender, "eval_ping", proactive)
     reply = ronin_reply.reply(sender, message)
@@ -866,6 +936,18 @@ def run_behavior(res):
               "what day is the patriots seahawks game",
               must_any=["wednesday", "wed ", "9/9", "sept 9", "september 9"],
               must_not=["can't pin", "cant pin", "preseason mode", "can't find", "cant find"])
+
+    # Per-user personality, with a REAL roll (character="roll"): his own team must come
+    # from the rolled character, and it must not be the user's team. must_not bans the
+    # user's own squad as the answer to "who do YOU root for" — the whole point is that
+    # he has a separate one to argue with them about.
+    _run_case(res, "his team is his own, rolled, and not the user's",
+              "who do you actually root for?",
+              seed_sender=lambda s: memory.set_team(s, "nba", "Golden State Warriors",
+                                                    "GSW", chat_id=1),
+              character="roll",
+              must_not=["i root for the warriors", "warriors, all day", "i'm a warriors",
+                        "im a warriors", "i ride with the warriors"])
 
     # The live bug, verbatim: asked to rate a fantasy draft, ronin called RJ Harvey a
     # "rookie" in his second season (2026-08-14). There was no player tool at all then, so
