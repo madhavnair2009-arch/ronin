@@ -277,6 +277,18 @@ def _check_character(res):
     res.check("data", "ronin's team is marked as HIS, distinct from theirs",
               "not theirs" in sp)
 
+    # The Dockerfile COPY is an explicit allowlist, so a NEW top-level module is simply
+    # absent from the image and the feature silently doesn't exist in production. That's
+    # exactly what happened to character.py on its first deploy — caught only because the
+    # in-container check ran. Assert every runtime module is actually shipped.
+    with open(os.path.join(ROOT, "Dockerfile"), encoding="utf-8") as f:
+        dockerfile = f.read()
+    runtime_mods = [n for n in os.listdir(ROOT)
+                    if n.endswith(".py") and not n.startswith(("test_", "_"))]
+    missing = [n for n in runtime_mods if n not in dockerfile]
+    res.check("data", "every top-level module is COPYed into the image",
+              not missing, f"not in Dockerfile: {missing}")
+
     # Kill switch: flipping it off returns everyone to the single global ronin.
     real = C.ENABLED
     try:

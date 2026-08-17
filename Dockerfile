@@ -33,7 +33,7 @@ COPY mcp/ ./mcp/
 # .harness/ holds the graff tool firewall (pre_tool hook) — allows only the MCP
 # servers, blocks bash/file/webfetch/subagent so an untrusted DM can't get a shell.
 COPY .harness/ ./.harness/
-COPY persona.md takes.json ronin_reply.py telegram_bot.py memory.py roam.py .mcp.json ./
+COPY persona.md takes.json ronin_reply.py telegram_bot.py memory.py roam.py character.py .mcp.json ./
 
 # graff resolves ~/bin/graff or PATH; ronin_reply calls ~/bin/graff, so symlink it.
 RUN mkdir -p /root/bin && ln -sf /usr/local/bin/graff /root/bin/graff
