@@ -1,7 +1,7 @@
 # ronin — next-session handoff
 
 Cold-start brief for picking this back up. For the full architecture see `OVERVIEW.md`,
-for the build log see `CHANGELOG.md`. Last worked: **2026-08-16**.
+for the build log see `CHANGELOG.md`. Last worked: **2026-08-17**.
 
 ---
 
@@ -14,7 +14,12 @@ autonomous **roam** loop (forms takes, proactively pings, reflects on allegiance
 ## Live status
 - **Deployed & healthy** on Fly.io — app **`ronin-sports`** (region `iad`, one machine).
 - Repo: **github.com/madhavnair2009-arch/ronin** — local `main` == `origin/main` == deployed
-  (last commit `503c910`). Everything below is live. Offline harness **66/66**.
+  (last commit `20dc0af`). Everything below is live. Harness **112/113**
+  (data 87 / integration 13 / behavior 12) — the one red is the documented flaky opener case.
+- **Tool surface is 8:** `sports_scoreboard`, `sports_standings`, `sports_team`, `sports_news`,
+  `sports_team_news`, `sports_champion`, **`sports_player`**, **`sports_roster`** (last two added
+  2026-08-16/17). Plus `fan_sentiment` (mcp/fan.py) and `web_search` (mcp/web.py). The firewall
+  allowlists `mcp__espn__*` wholesale, so new espn tools need no firewall change — pinned by a test.
 - **Model routing is LIVE (2026-07-30).** Chat + roam judge/vibe/digest run on `claude-sonnet-5`;
   reflect + grade stay on `claude-opus-4-8`. Verified in-container: chat replies in-voice with no
   em dashes, roam passes run clean. Kill switch: set `RONIN_ROAM_MODEL=claude-opus-4-8` (roam) or
@@ -24,29 +29,59 @@ autonomous **roam** loop (forms takes, proactively pings, reflects on allegiance
   (digest `31f9f82af7024d4a`); both `claude-opus-4-8` and `claude-sonnet-5` confirmed reachable on
   it. **Still TODO (user):** revoke the OLD key at console.anthropic.com, set a workspace spend
   limit, update local `~/ronin/.env`.
-- **Two live-reported bugs fixed 2026-08-16 (found from the user's own Telegram screenshots —
-  both were invisible to a green 71/71 harness).** Harness now **92/92** (12 new data checks,
-  4 integration, 1 behavior).
-  1. **Repeated storyline content.** Ronin pinged about Don Nelson's death (Aug 9) and again
-     about his memorial (Aug 14). The second ping was *right* to send — the complaint was that it
-     re-explained nellieball to someone already told. Cause: the judge composed each message
-     against `memory.recent_sent`'s **48h** default, so at Aug 14 the Aug 9 ping (~114h back) was
-     invisible and it re-derived the background. The "don't repeat" rule was followed correctly
-     against a silently truncated context. Judge now has its own window (`JUDGE_RECALL_SECS`
-     14d, `JUDGE_RECALL_N` 12); **chat stays at 48h on purpose** — that window is tuned for
-     follow-up resolution, and a test pins it so nobody "fixes" it.
-  2. **Player facts had no tool at all.** Ronin called RJ Harvey a "rookie" in his second season.
-     There was no player-level tool, so every claim about a person came from model weights;
-     the dateline injection can't help, since knowing the date doesn't update a stale fact.
-     Added **`sports_player`** (search → roster → athlete-detail fallback, all 6 leagues).
-- **Still open:** the volunteered-teammate leak (see the 🔖 bookmark below) — grounded on the
-  player asked about, still fallible on the player ronin names himself.
-- The grader is proven end-to-end. Next up: confirm real roam takes get `deadline`s set
-  (item 1), and the key housekeeping above.
+- **Per-user personality is LIVE (2026-08-16).** Every user gets their own ronin: same voice,
+  same values, plus three rolled taste traits and one signature team. Kill switch
+  `RONIN_CHARACTER=0`. First organic roll landed 2026-08-17 — the owner (uid `8532852228`,
+  a Warriors fan) rolled `chaotic/deep-bench/physical` → **Detroit Pistons**.
+- **No open correctness bugs.** All three reported this session are fixed, deployed and verified
+  in-container. See below.
 
 ---
 
-## What this session shipped (2026-07-15 → 19)
+## What this session shipped (2026-08-16 → 17)
+
+Three bugs and one feature. **Every bug came from the owner's own Telegram screenshots, and all
+three were invisible to a harness that was green at 71/71** — the tests only looked where we'd
+already been burned. Harness went 71 → 112.
+
+**1. Repeated storyline content** (`02a9e0d`). Ronin pinged about Don Nelson's death (Aug 9) and
+again about his memorial (Aug 14), re-explaining nellieball to someone already told. **Not a dedup
+failure** — ESPN ran three separate Nelson stories and the memorial was real news, so suppressing
+it would have been wrong. The judge composed each message against `memory.recent_sent`'s **48h**
+default, so the Aug 9 ping (~114h back) was simply absent and it re-derived the background. The
+anti-repeat rule was obeyed against a silently truncated context — same family as the shared-cursor
+bug. Judge now has its own window (`JUDGE_RECALL_SECS` 14d, `JUDGE_RECALL_N` 12); **chat stays at
+48h on purpose**, pinned by a test.
+
+**2. Ungrounded player facts** (`02a9e0d`). Ronin called RJ Harvey a "rookie" in his second season.
+There was no player-level tool at all, so every claim about a person came from model weights. **The
+dateline injection cannot help here** — knowing the date tells you when it is, not what's changed
+since. Added **`sports_player`**.
+
+**3. The volunteered-teammate leak** (`20dc0af`). Fixing #2 moved the defect rather than removing
+it: grounded on the player *asked about*, ronin still invented the teammate he *volunteered*
+("splitting carries with Javonte Williams" — a Cowboy). Added **`sports_roster`**. 4/4 clean after.
+
+**4. Per-user personality** (`d4c029a`, `8818faf`). See the section below.
+
+### Gotchas earned 2026-08-16/17 (don't relearn these)
+- **A green harness proves nothing about code paths it doesn't touch.** Three user-visible bugs
+  lived under 71/71. When a bug is reported, find the *seam*, then ask what else shares it.
+- **`dry_run=True` on `roam.run_once` is NOT safe on the live volume.** It still calls
+  `mark_seen` and `log_sent`; only `_tg_send` is gated. A dry pass silently consumes real
+  headlines and logs them as sent, eating a genuine ping. `_judge` *is* safe to call directly.
+- **The Dockerfile `COPY` is an explicit allowlist.** `character.py` deployed green and silently
+  did nothing because it was never in the image. It failed quietly (the import is wrapped in
+  try/except) so nothing flagged it — only an in-container check caught it. Now guarded by a test.
+- **Substring matching on sports abbreviations is a trap.** "rb" is inside "quarte*rb*ack" and
+  "corne*rb*ack", so the first roster filter returned QBs and CBs. Match the abbrev exactly or a
+  whole word. `C`/`G`/`F` are worse.
+- **Verify a fix is a fix, and verify a failure is pre-existing.** Both directions cost one
+  command (`git stash`, or a couple of re-runs) and both were load-bearing today.
+
+---
+
+## Earlier — what the 2026-07-15 → 19 session shipped
 - **⚽ Soccer** — 8 leagues in `mcp/espn.py`: `wc` (World Cup, national) + `epl/laliga/seriea/
   bundesliga/ligue1/ucl/mls` (club). Points-based tables, cup-final title detection.
 - **🔑 Key rotation** — `ANTHROPIC_API_KEY`, `TELEGRAM_BOT_TOKEN`, `BSKY_APP_PASSWORD` all
@@ -96,7 +131,11 @@ python3 mcp/espn.py selftest
   if you run the full bot locally.
 - **The user’s Telegram id:** `8532852228`. Current saved team: Golden State Warriors (NBA).
   They may still have leftover test teams; their live chat session may hold stale early turns.
-- **Model:** `claude-opus-4-8` (`RONIN_MODEL`).
+- **Model:** `claude-sonnet-5` for chat (`RONIN_MODEL`, pinned in `fly.toml`) and for roam
+  judge/vibe/digest/character; `claude-opus-4-8` for reflect + grade. See the routing note above.
+- **Their ronin:** `chaotic/deep-bench/physical` → Detroit Pistons (rolled 2026-08-17).
+- **Env kill switches:** `RONIN_CHARACTER=0` (per-user personality off),
+  `RONIN_ROAM_MODEL` (all roam on one model), `ROAM_JUDGE_RECALL` (judge memory window, secs).
 
 ---
 
@@ -117,6 +156,9 @@ python3 mcp/espn.py selftest
 ---
 
 ## Open items / next up (rough priority)
+> **Start here: the ⭐ NEXT UP block further down** (added 2026-08-17) is the current queue.
+> Everything above it in this section is historical context for how the system got here.
+
 **Shipped 2026-07-20/21 (all live):** reliability pass (judge-timeout retry, null-confidence
 guard, bounded `outbound.json`); proactive-ping context in the chat prompt (follow-ups resolve);
 **calibration + take de-dup** (topic-slug identity, `resolves_when`/`deadline`, `grade()` pass,
@@ -193,8 +235,8 @@ the Spain take a HIT off the real tool, conf 0.6→0.7, wrote a grounded `calibr
 Synthetic take + record restored from backup afterward (the volume must never carry a fake
 "1-0, nailed the Spain call"). Harness **71/71**.
 
-### ✅ BUILT 2026-08-16 — per-user personality (rolled team + taste lens)
-**Code complete, harness green, NOT yet deployed** (awaiting sign-off on the trait vocab).
+### ✅ LIVE 2026-08-16 — per-user personality (rolled team + taste lens)
+**Deployed and verified in-container.** Vocab signed off by the owner.
 Lives in `character.py`; storage is `memory.get_character`/`set_character`; injected by
 `ronin_reply._load_system_prompt` via `character.prompt_block`. Kill switch `RONIN_CHARACTER=0`
 returns everyone to the single global ronin.
@@ -214,6 +256,12 @@ Two things worth knowing:
 - **The roll prefers a league the user already follows**, excluding their own team, because
   the banter only lands in a shared sport. Falls back to `RONIN_HOME_LEAGUE` (nba) if they
   haven't set a team yet.
+- **Write-once is load-bearing, and it bites vocab edits.** Anyone already rolled keeps their
+  character forever; changing a trait word later won't re-roll them. A vocab change needs a
+  migration or a deliberate reroll (which undercuts the "feels like fate" premise). Decide
+  vocab changes BEFORE onboarding a batch of testers.
+- **Inspect a roll:** `memory.get_character("<uid>")`. Count them:
+  `sum(1 for u in memory._read("relationships.json",{}).values() if u.get("character"))`.
 
 Original spec, kept for context:
 
@@ -291,6 +339,34 @@ The color detail is the trap, because it's the part nobody thinks to look up.
   added in `mcp/espn.py`.
 - **Repro:** `reply(uid, "quick take on rj harvey for my fantasy team")` a few times and watch
   whether any *other* player gets named. Verify each with `espn.player(name)`.
+
+### ⭐ NEXT UP (added 2026-08-17, roughly in priority order)
+
+**A. The season-opener bug — the most persistent flake in the harness.** The behavior suite
+failed on "which game is first" in three different disguises today (`first NFL game`, `correct
+weekday`, and passing only on re-run); measured ~1/2 to 2/3. The miss always has the same shape:
+it picks the **Australia game (Rams-Niners, Thu 9/10)** as the opener instead of the real one
+(Patriots-Seahawks, **Wed 9/9**). `persona.md` already carries a long rule about this and it
+still doesn't hold, which is the signal that **the prompt approach has hit its ceiling**. The
+deterministic fix is to make `sports_scoreboard` mark the opener explicitly — label the first
+chronological game rather than trusting the model to read the top line — the same
+enforce-at-the-boundary move as `_strip_thinking` and `_normalize_voice`. Probably a session.
+
+**B. Watch the first real roam pings on the new judge.** `JUDGE_RECALL_SECS` is deployed but the
+roam loop hasn't run a live pass with it. Confirm a follow-up ping leads with what's new instead
+of re-explaining. Also note `JUDGE_RECALL_N=12` puts more prior messages in every judge call —
+small per call, but it scales with signups on the highest-volume roam path.
+
+**C. The DDG SERP check can't tell "blocked" from "broken".** A blocked fetch returns an anomaly
+page that parses to 0 results and hard-fails, while an outright network error skips gracefully.
+It went red today purely from test volume off one IP. Detect the anomaly page and skip like the
+network path does, or it'll read as a dead parser to whoever hits it cold. Small fix.
+
+**D. Key housekeeping (owner, still outstanding).** Revoke the OLD `ANTHROPIC_API_KEY` at
+console.anthropic.com, set a workspace spend limit, update local `~/ronin/.env` (its Telegram/Bsky
+values are still pre-rotation). Also confirm the older Telegram/Bsky keys were revoked at source.
+
+**E. Repo hygiene.** ~60 loose `sess_*.json` files in the repo root (gitignored, but noise).
 
 1. **Watch calibration in the wild — now the *mechanism* is proven, the open question is the
    judge's inputs.** The grader fires and grades correctly; what's still unverified is whether
