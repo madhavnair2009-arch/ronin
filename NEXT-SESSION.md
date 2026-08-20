@@ -1,7 +1,7 @@
 # ronin — next-session handoff
 
 Cold-start brief for picking this back up. For the full architecture see `OVERVIEW.md`,
-for the build log see `CHANGELOG.md`. Last worked: **2026-08-17**.
+for the build log see `CHANGELOG.md`. Last worked: **2026-08-20**.
 
 ---
 
@@ -14,8 +14,10 @@ autonomous **roam** loop (forms takes, proactively pings, reflects on allegiance
 ## Live status
 - **Deployed & healthy** on Fly.io — app **`ronin-sports`** (region `iad`, one machine).
 - Repo: **github.com/madhavnair2009-arch/ronin** — local `main` == `origin/main` == deployed
-  (last commit `20dc0af`). Everything below is live. Harness **112/113**
-  (data 87 / integration 13 / behavior 12) — the one red is the documented flaky opener case.
+  (last commit `20dc0af`). Everything below is live. Harness **121/121**
+  (data 93 / integration 14 / behavior 14) — fully green for the first time; the long-standing
+  opener flake is fixed, see below. Two behavior cases go red whenever DuckDuckGo is
+  unreachable (that's item C, not a product bug) — re-run before believing them.
 - **Tool surface is 8:** `sports_scoreboard`, `sports_standings`, `sports_team`, `sports_news`,
   `sports_team_news`, `sports_champion`, **`sports_player`**, **`sports_roster`** (last two added
   2026-08-16/17). Plus `fan_sentiment` (mcp/fan.py) and `web_search` (mcp/web.py). The firewall
@@ -150,13 +152,18 @@ python3 mcp/espn.py selftest
 - **ESPN offseason quirks:** `sports_team`’s “next game” is blank in the offseason (use the
   no-date `sports_scoreboard`); the default scoreboard caps at ~100 events from the *start* of
   a range (scan backward for late cup finals); season `type.name` lags the real stage.
-- **Em dashes leak from tool-output strings**, not just the model. Grep `mcp/espn.py` for `—`
-  when touching output formatters.
+- **Em dashes leak from tool-output strings**, not just the model. Swept 2026-08-20: 83 em
+  dashes removed from every runtime string across `mcp/*.py`, `roam.py`, `ronin_reply.py`,
+  `character.py`, `telegram_bot.py` (tool output, tool DESCRIPTIONS, and the roam prompt
+  addenda — the addenda mattered, they were modelling the very punctuation the persona bans).
+  Docstrings and comments were left alone; they never reach the model. **The one em dash that
+  must stay is `_EMDASH` in `ronin_reply.py`** — that regex IS the guard, it has to match the
+  character. `_normalize_voice` still backstops all of this at the boundary.
 
 ---
 
 ## Open items / next up (rough priority)
-> **Start here: the ⭐ NEXT UP block further down** (added 2026-08-17) is the current queue.
+> **Start here: the ⭐ NEXT UP block further down** (updated 2026-08-20) is the current queue.
 > Everything above it in this section is historical context for how the system got here.
 
 **Shipped 2026-07-20/21 (all live):** reliability pass (judge-timeout retry, null-confidence
@@ -340,17 +347,55 @@ The color detail is the trap, because it's the part nobody thinks to look up.
 - **Repro:** `reply(uid, "quick take on rj harvey for my fantasy team")` a few times and watch
   whether any *other* player gets named. Verify each with `espn.player(name)`.
 
-### ⭐ NEXT UP (added 2026-08-17, roughly in priority order)
+### ✅ CLOSED 2026-08-20 — the season-opener bug (and the diagnosis that was wrong)
 
-**A. The season-opener bug — the most persistent flake in the harness.** The behavior suite
-failed on "which game is first" in three different disguises today (`first NFL game`, `correct
-weekday`, and passing only on re-run); measured ~1/2 to 2/3. The miss always has the same shape:
-it picks the **Australia game (Rams-Niners, Thu 9/10)** as the opener instead of the real one
-(Patriots-Seahawks, **Wed 9/9**). `persona.md` already carries a long rule about this and it
-still doesn't hold, which is the signal that **the prompt approach has hit its ceiling**. The
-deterministic fix is to make `sports_scoreboard` mark the opener explicitly — label the first
-chronological game rather than trusting the model to read the top line — the same
-enforce-at-the-boundary move as `_strip_thinking` and `_normalize_voice`. Probably a session.
+**The handoff's own diagnosis of this bug was incorrect, and acting on it would have made
+things worse.** Recorded here because the wrong theory was plausible and survived two sessions.
+
+The theory was: the tool returns upcoming games earliest-first, the model just misreads the
+top line, so label the first chronological game as the opener. What was actually happening:
+**ESPN's no-date scoreboard returns the CURRENT slate, not upcoming games.** In the preseason
+gap that slate was 16 finished preseason games, all `Final`. So `persona.md`'s central rule
+("with no date it returns the next upcoming games, the FIRST line is your answer") described
+behavior the tool never had. The model followed it exactly, got nothing usable, and fell back
+to model weights — which is where the Australia game (Rams-Niners) came from; it's the
+salient marquee opener in training data. The prompt hadn't "hit its ceiling", it was
+describing a tool contract that didn't exist.
+
+Had we labelled the first chronological line as the opener, we'd have shipped
+`DET @ CIN — Final`, a completed preseason game, as the season opener.
+
+**The fix** (all in `mcp/espn.py`):
+- `_upcoming()` — when nothing on the current slate is unplayed, scan forward in widening
+  windows (45/150/300d) and stop at the first with real fixtures. The ~100-event cap counts
+  from the START of a range, so the earliest games are exactly the ones that survive it.
+- `_find_opener()` — splits "next game" from "season opener" off ESPN's `season.type`
+  (1 preseason / 2 regular). Searches wider than the display horizon, since the NBA opener
+  sits ~3 weeks past its first preseason game.
+- `_banner()` — states the answer outright as `NEXT GAME:` and (only while the regular season
+  hasn't started) `SEASON OPENER:`. Same enforce-at-the-boundary move as `_strip_thinking`
+  and `_normalize_voice`.
+- Fallback slate capped at 40 lines (`_MAX_SLATE`); it was printing 80.
+
+**Verified:** 3/3 on each opener case in isolation, then 14/14 behavior in the full run;
+every run named Patriots-Seahawks Wed 9/9 and the Australia game never appeared. The live
+integration check compares against a DIFFERENT ESPN endpoint (`seasontype=2&week=1`) so it
+can't pass by agreeing with the code under test. Correct across NFL/NBA/NHL (all get openers)
+and WNBA/MLB/EPL/NCAAF (correctly get none).
+
+**Gotcha earned here — don't relearn it:** the first draft labelled *any* first regular-season
+game as the opener, which tagged ordinary mid-season WNBA and MLB games "SEASON OPENER".
+The opener line may only appear when the next game is still preseason. Pinned by a data test.
+
+**The bigger lesson:** when a prompt rule "keeps not holding", check that the tool actually
+does what the rule claims before concluding the model is at fault. Two sessions of persona
+tuning went into enforcing a contract the tool never honored.
+
+### ⭐ NEXT UP (updated 2026-08-20, roughly in priority order)
+
+**A. ✅ Closed 2026-08-20** — the season-opener bug. Root cause was NOT what this
+doc predicted; the writeup is directly above and worth reading before trusting any
+other diagnosis in here.
 
 **B. Watch the first real roam pings on the new judge.** `JUDGE_RECALL_SECS` is deployed but the
 roam loop hasn't run a live pass with it. Confirm a follow-up ping leads with what's new instead
@@ -361,12 +406,16 @@ small per call, but it scales with signups on the highest-volume roam path.
 page that parses to 0 results and hard-fails, while an outright network error skips gracefully.
 It went red today purely from test volume off one IP. Detect the anomaly page and skip like the
 network path does, or it'll read as a dead parser to whoever hits it cold. Small fix.
+**Bumped 2026-08-20:** this bit twice more. It now also costs behavior-suite runs — when DDG is
+unreachable the "follow-up attaches to the proactive ping" case goes red because ronin correctly
+refuses to guess, so the reply never mentions the topic. Re-run those cases before believing a
+red, and consider a fixture so the suite doesn't depend on a third-party SERP at all.
 
 **D. Key housekeeping (owner, still outstanding).** Revoke the OLD `ANTHROPIC_API_KEY` at
 console.anthropic.com, set a workspace spend limit, update local `~/ronin/.env` (its Telegram/Bsky
 values are still pre-rotation). Also confirm the older Telegram/Bsky keys were revoked at source.
 
-**E. Repo hygiene.** ~60 loose `sess_*.json` files in the repo root (gitignored, but noise).
+**E. Repo hygiene.** ~114 loose `sess_*.json` files in the repo root (gitignored, but noise).
 
 1. **Watch calibration in the wild — now the *mechanism* is proven, the open question is the
    judge's inputs.** The grader fires and grades correctly; what's still unverified is whether

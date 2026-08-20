@@ -72,7 +72,7 @@ def _load_system_prompt(sender_id=None):
     takes = memory.get_takes()
     open_takes = [t for t in takes if t.get("status", "open") == "open"]
     if open_takes:
-        lines = ["\n## Your standing takes right now (you formed/revised these — own them)"]
+        lines = ["\n## Your standing takes right now (you formed/revised these - own them)"]
         for t in open_takes:
             lines.append(f"- **{t['subject']}** (conf {t.get('confidence', '?')}): {t['stance']}")
         persona += "\n" + "\n".join(lines) + "\n"
@@ -82,7 +82,7 @@ def _load_system_prompt(sender_id=None):
     if rec["accuracy"] is not None:
         graded = sorted((t for t in takes if t.get("status") in ("hit", "miss")),
                         key=lambda t: t.get("graded_at", 0), reverse=True)
-        line = ["\n## Your track record (real and earned — reference it, never inflate it)",
+        line = ["\n## Your track record (real and earned - reference it, never inflate it)",
                 f"Graded on {rec['hits'] + rec['misses']} of your calls so far: "
                 f"{rec['hits']} right, {rec['misses']} wrong."]
         for t in graded[:3]:
@@ -149,7 +149,7 @@ def _load_system_prompt(sender_id=None):
         pinged = memory.recent_sent(sender_id)
         if pinged:
             now = datetime.datetime.now()
-            lines = ["\n## What you recently texted them first (unprompted — they may be replying to this)"]
+            lines = ["\n## What you recently texted them first (unprompted - they may be replying to this)"]
             for p in pinged:
                 when = datetime.datetime.fromtimestamp(p["at"])
                 ago = _ago(now - when)

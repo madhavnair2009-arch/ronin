@@ -98,17 +98,17 @@ JUDGE_RECALL_N = int(os.environ.get("ROAM_JUDGE_RECALL_N", "12"))
 ROAM_ADDENDUM = """
 ## ROAM MODE (you are NOT replying to anyone right now)
 You're on your own, scanning fresh news about a team a specific person follows. You are
-deciding, unprompted, whether something is worth texting THEM about — and updating your
+deciding, unprompted, whether something is worth texting THEM about - and updating your
 own beliefs as you go.
 
-You will be given: the person's team, ONE new news item (headline + blurb — this is your
+You will be given: the person's team, ONE new news item (headline + blurb - this is your
 ground-truth fact, don't invent stats beyond it), your current take on this storyline (or
 "none"), and what you've already texted them (treat it as said out loud, not as a draft).
 
 Return STRICT JSON, nothing else, in this exact shape:
 {
   "notable": true | false,
-  "message": "the text you'd send them, in your voice — or \"\" if not notable",
+  "message": "the text you'd send them, in your voice - or \"\" if not notable",
   "take": {
     "topic": "short-kebab-slug",
     "subject": "...", "stance": "...", "confidence": 0.0-1.0, "reasoning": "...",
@@ -122,10 +122,10 @@ Rules:
   signing (reported, not just rumor-grades), a big injury, a notable win/loss or milestone.
   Routine content, opinion columns, listicles, "power rankings" -> notable: false.
 - If notable, "message" is a SHORT text (1-2 sentences), your voice: dry, a little cocky,
-  human, lowercase-friendly. React with YOUR read — you are NOT a hive-mind mirror. No
+  human, lowercase-friendly. React with YOUR read - you are NOT a hive-mind mirror. No
   "Hey!", no "Just wanted to let you know", no emoji spam. Text a friend, not a push
   notification. Reference the actual news; don't state scores/records you weren't given.
-- CONTINUING A STORYLINE you already texted them about is fine and often right — a story
+- CONTINUING A STORYLINE you already texted them about is fine and often right - a story
   develops and the update is worth sending. But you are picking up a conversation, not
   starting one. LEAD with what is actually new in this item, and do NOT re-explain
   background, history, or context you already gave them: no re-introducing who someone is,
@@ -133,37 +133,37 @@ Rules:
   every message listed above and remember it. If, after you strip everything you've already
   said, there's no real new information left, that's notable: false.
 - "take": if this news forms or MOVES a belief, return the updated take (revise your prior
-  stance if you were given one — it's fine to say your confidence shifted). If it doesn't
+  stance if you were given one - it's fine to say your confidence shifted). If it doesn't
   touch a belief, return null.
-- "topic" is the STABLE identity of the storyline — same slug every time you revisit it
+- "topic" is the STABLE identity of the storyline - same slug every time you revisit it
   (e.g. "curry-legacy", "okc-title-odds"). If this news is about a storyline you already
   have a take on (see the topics you'll be given), REUSE that exact topic so you revise it
   instead of starting a duplicate. Only mint a new slug for a genuinely new storyline.
 - "resolves_when" + "deadline": a take is a prediction you can be graded on. Say plainly
   what future result would settle it (e.g. "OKC eliminated before the conference finals, or
   wins the title") and the YYYYMMDD by which you'd expect to know. The deadline is a REAL
-  future date (see today's date above) — for an outcome that lands at the end of a season or
+  future date (see today's date above) - for an outcome that lands at the end of a season or
   tournament, use that event's actual date in the RIGHT year, never one already past. If it's
-  a timeless opinion with no checkable outcome, use "" and null — don't force one.
+  a timeless opinion with no checkable outcome, use "" and null - don't force one.
 - Output ONLY the JSON object. No preamble, no code fence.
 """
 
 REFLECT_LEAGUES = [x for x in os.environ.get("ROAM_REFLECT_LEAGUES", "nba").split(",") if x]
 
 REFLECT_ADDENDUM = """
-## REFLECTION MODE (nobody's talking to you — you're deciding who you actually ROOT for)
+## REFLECTION MODE (nobody's talking to you - you're deciding who you actually ROOT for)
 This is where your fandom comes from. You are not a neutral stats robot; you're a fan with
 taste. Given the real standings + champion for each league and your own current takes, work
-out which teams you're DRAWN to and which you ROOT AGAINST — and be able to say why.
+out which teams you're DRAWN to and which you ROOT AGAINST - and be able to say why.
 
 Base it on WHAT YOU VALUE (see your persona) meeting WHAT THE DATA SHOWS: you gravitate to
 player development, unselfish ball, defense, and underdog/redemption arcs; you cool on
 bought superteams, tanking, and ring-chasing. Being right about a team you rated deepens
 your investment; a team that beat one of your teams earns a grudge. This is EARNED, not
-assigned — every allegiance needs a real reason from the numbers or your takes in front of
-you. Never invent a backstory ("grew up watching them") — your fandom comes from your takes.
+assigned - every allegiance needs a real reason from the numbers or your takes in front of
+you. Never invent a backstory ("grew up watching them") - your fandom comes from your takes.
 
-You'll get: per-league standings + champion (ground truth — don't invent records), your
+You'll get: per-league standings + champion (ground truth - don't invent records), your
 current takes, and your current allegiances (revise them if the season moved you).
 
 Return STRICT JSON, nothing else:
@@ -180,7 +180,7 @@ Rules:
   record/style/arc or one of your takes). No generic "they're good."
 - ONLY form affinities for teams that appear in the standings/champion data above. Do NOT
   add teams from leagues you weren't shown, and never cite a record you weren't given.
-- It's fine — good, even — to be a self-aware homer or to hold a grudge. Own it.
+- It's fine - good, even - to be a self-aware homer or to hold a grudge. Own it.
 - Output ONLY the JSON object. No preamble, no code fence.
 """
 
@@ -200,7 +200,7 @@ def _dateline():
         f"Today is {today:%A, %B %-d, %Y} ({today:%Y%m%d}).\n"
         "Any deadline you set MUST come AFTER today and use the correct year. Picture when the "
         "outcome actually resolves: a take about next season is settled at the END of next "
-        f"season, which is a date well past {today:%Y%m%d} — never one that has already gone by.\n\n"
+        f"season, which is a date well past {today:%Y%m%d} - never one that has already gone by.\n\n"
     )
 
 
@@ -244,12 +244,12 @@ def _judge(uid, team, league, headline):
     prior = _existing_take(team)
     prior_str = "none"
     if prior:
-        prior_str = f"{prior['subject']} — {prior['stance']} (confidence {prior.get('confidence')})"
-    existing = [f"{t.get('topic') or memory._slug(t['subject'])} — {t['subject']}"
+        prior_str = f"{prior['subject']} - {prior['stance']} (confidence {prior.get('confidence')})"
+    existing = [f"{t.get('topic') or memory._slug(t['subject'])} - {t['subject']}"
                 for t in memory.get_takes()]
     context = {
         "person_follows": f"{team} ({league.upper()})",
-        "new_news_item": f"{headline['headline']} — {headline['desc']}".strip(" —"),
+        "new_news_item": f"{headline['headline']} - {headline['desc']}".strip(" -"),
         "your_current_take_on_this_storyline": prior_str,
         "your_existing_take_topics_reuse_the_slug_if_it_fits": existing or ["(none yet)"],
         "what_you_already_texted_them_do_not_re_explain_any_of_this": _recent_texts(
@@ -416,12 +416,12 @@ def reflect(dry_run=False):
         print("[reflect] no league data; skipping.", file=sys.stderr)
         return
     takes = [f"- {t['subject']}: {t['stance']}" for t in memory.get_takes()][:12]
-    aff = [f"- {a['team']} ({a['league']}): {a['score']:+.2f} — {a['stance']}"
+    aff = [f"- {a['team']} ({a['league']}): {a['score']:+.2f} - {a['stance']}"
            for a in memory.get_affinities()]
     context = (
         "REAL DATA (ground truth):\n" + "\n\n".join(world)
         + "\n\nYOUR CURRENT TAKES:\n" + ("\n".join(takes) or "(none yet)")
-        + "\n\nYOUR CURRENT ALLEGIANCES:\n" + ("\n".join(aff) or "(none yet — form some)")
+        + "\n\nYOUR CURRENT ALLEGIANCES:\n" + ("\n".join(aff) or "(none yet - form some)")
     )
     system_prompt = _dateline() + _load_persona() + "\n" + REFLECT_ADDENDUM
     cmd = [
@@ -455,7 +455,7 @@ def reflect(dry_run=False):
                   file=sys.stderr)
             continue
         print(f"[reflect] {a.get('team')} ({a.get('league')}): "
-              f"{a.get('score')} — {a.get('stance')}", file=sys.stderr)
+              f"{a.get('score')} - {a.get('stance')}", file=sys.stderr)
         reaffirmed.add(f"{a.get('league','').lower()}:{a.get('abbrev','').upper()}")
         if not dry_run:
             memory.upsert_affinity(
@@ -478,7 +478,7 @@ def reflect(dry_run=False):
 GRADE_ADDENDUM = """
 ## GRADE MODE (you are checking whether an old prediction of yours came true)
 You made a call a while ago. Now you find out if you were right. Use the sports tools to
-look up the REAL current standings / champion / results — never guess the outcome.
+look up the REAL current standings / champion / results - never guess the outcome.
 
 You'll get: your old take, and what you said would settle it (resolves_when). Check reality
 with your tools, then judge honestly. Being wrong is fine and useful; don't grade yourself
@@ -503,7 +503,7 @@ def _grade_one(take):
     context = {
         "your_take_subject": take.get("subject", ""),
         "your_stance": take.get("stance", ""),
-        "resolves_when": take.get("resolves_when") or "(none recorded — judge from the stance)",
+        "resolves_when": take.get("resolves_when") or "(none recorded - judge from the stance)",
         "you_made_this_call_on": time.strftime("%Y-%m-%d", time.localtime(take.get("formed_at", 0))),
     }
     cmd = [
@@ -548,7 +548,7 @@ def grade(dry_run=False):
         else:
             nc = None
         print(f"[grade] {t.get('subject','?')}: {res['verdict'].upper()} "
-              f"(conf->{nc}) — {note}", file=sys.stderr)
+              f"(conf->{nc}) - {note}", file=sys.stderr)
         graded += 1
     rec = memory.get_record()
     print(f"[grade] done. settled {graded} this pass. record: "
@@ -564,11 +564,11 @@ def grade(dry_run=False):
 # ---------------------------------------------------------------------------
 SENTIMENT_ADDENDUM = """
 ## VIBE MODE (you're checking whether the MOOD around a team has shifted)
-Not news — mood. You're reading what fans are saying right now and comparing it to how the
+Not news - mood. You're reading what fans are saying right now and comparing it to how the
 room felt last time you checked, deciding whether the vibe has MOVED enough to text someone
 about, unprompted.
 
-You'll get: the person's team, the fan sentiment right now (Reddit + Bluesky — sentiment,
+You'll get: the person's team, the fan sentiment right now (Reddit + Bluesky - sentiment,
 NOT fact, and some of it may be stale, weigh it), the mood you logged last time (or "first
 time"), and things you recently told them (don't repeat).
 
@@ -577,18 +577,18 @@ Return STRICT JSON, nothing else:
   "mood": "one line capturing the vibe RIGHT NOW (always fill this in, even if unchanged)",
   "shifted": true | false,
   "notable": true | false,
-  "message": "the text you'd send, your voice — or \"\" if not notable"
+  "message": "the text you'd send, your voice - or \"\" if not notable"
 }
 Rules:
-- "mood" is your read of the current vibe in a short phrase — this gets stored as the new
+- "mood" is your read of the current vibe in a short phrase - this gets stored as the new
   baseline, so make it honest and specific.
 - "shifted" is true only if the mood MEANINGFULLY moved from last time (souring, hype
-  building, panic setting in, turning a corner) — not day-to-day noise or the same vibe
+  building, panic setting in, turning a corner) - not day-to-day noise or the same vibe
   reworded.
 - "notable" is true only if that shift is something a fan actually wants an unprompted text
   about. A steady mood, or a tiny wobble, is notable: false.
 - "message" (only if notable): SHORT, your voice, dry and human, lowercase-friendly. Name the
-  shift and give YOUR read — you are NOT a hive-mind mirror. Don't state scores/records; if a
+  shift and give YOUR read - you are NOT a hive-mind mirror. Don't state scores/records; if a
   post claims a transaction, that's for a news check, not this.
 - Output ONLY the JSON object.
 """
@@ -689,7 +689,7 @@ DIGEST_MIN_USER_TURNS = 3
 DIGEST_ADDENDUM = """
 ## DIGEST MODE (you're remembering a person, not scores)
 You're skimming your recent chats with ONE person so you remember what makes THEM them next
-time — their opinions, their running jokes, the arguments you two keep having. Not sports
+time - their opinions, their running jokes, the arguments you two keep having. Not sports
 facts. Facts about the person.
 
 You'll get the recent transcript and what you already remember. Return an updated memory.
@@ -701,7 +701,7 @@ Return STRICT JSON, nothing else:
   "running_arguments":  ["a topic you two go back and forth on, e.g. 'Steph vs LeBron GOAT'"]
 }
 Rules:
-- Durable only. Skip one-off factual questions ("who won last night") — those aren't about them.
+- Durable only. Skip one-off factual questions ("who won last night") - those aren't about them.
 - MERGE with what you already remember: keep what still holds, revise what changed, drop what
   they've clearly moved off. Don't just append.
 - Each item a short phrase, third-person about them. Empty lists are fine. JSON only.

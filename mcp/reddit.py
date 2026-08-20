@@ -89,7 +89,7 @@ def _token():
         with urllib.request.urlopen(req, timeout=12) as r:
             body = json.loads(r.read().decode())
     except urllib.error.HTTPError as e:
-        raise SentimentError(f"Reddit auth failed (HTTP {e.code}) — check client id/secret.")
+        raise SentimentError(f"Reddit auth failed (HTTP {e.code}) - check client id/secret.")
     tok = body.get("access_token")
     if not tok:
         raise SentimentError("Reddit auth returned no token.")
@@ -151,7 +151,7 @@ def _via_search(sub, topic):
     if not results:
         where = f" about '{topic}'" if topic else ""
         return f"Couldn't surface r/{sub} chatter{where} right now."
-    header = (f"What r/{sub} is saying about '{topic}' (fan sentiment via search, NOT fact — "
+    header = (f"What r/{sub} is saying about '{topic}' (fan sentiment via search, NOT fact - "
               f"no vote counts on this path):" if topic
               else f"Recent r/{sub} threads (fan sentiment via search, NOT fact):")
     lines = [header]
@@ -174,12 +174,12 @@ TOOLS = {
         "fn": lambda a: reddit_sentiment(a.get("league"), a.get("topic")),
         "schema": {
             "name": "reddit_sentiment",
-            "description": "What fans are actually saying on Reddit — the mood, hot takes, what's "
+            "description": "What fans are actually saying on Reddit - the mood, hot takes, what's "
                            "blowing up in a sport's subreddit (r/nba, r/nfl, r/soccer, etc.). "
                            "Pass the league to pick the right sub; add a topic/team/player to "
                            "search it, or omit for what's hot. Richer fan takes than the social "
                            "feed. This is SENTIMENT, not fact: read the vibe, then give YOUR "
-                           "read — don't just mirror it, and verify any 'trade' with sports_news.",
+                           "read - don't just mirror it, and verify any 'trade' with sports_news.",
             "inputSchema": {
                 "type": "object",
                 "properties": {

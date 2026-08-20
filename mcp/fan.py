@@ -56,7 +56,7 @@ def fan_sentiment(league=None, topic=None):
     if r_err and b_err:
         raise VibeError(f"both sources failed (reddit: {r_err}; bluesky: {b_err})")
     parts = [
-        "Fan sentiment from TWO sources — weigh them together, and if Reddit and Bluesky "
+        "Fan sentiment from TWO sources - weigh them together, and if Reddit and Bluesky "
         "clearly disagree, that gap is worth calling out. SENTIMENT, not fact; give YOUR read.",
         "\n=== REDDIT (deeper fan takes; search-based, can lag real-time) ===\n"
         + (r_out if r_out else f"(unavailable: {r_err})"),
@@ -71,13 +71,13 @@ TOOLS = {
         "fn": lambda a: fan_sentiment(a.get("league"), a.get("topic")),
         "schema": {
             "name": "fan_sentiment",
-            "description": "The mood — what fans and media are saying — pulled from BOTH Reddit "
+            "description": "The mood - what fans and media are saying - pulled from BOTH Reddit "
                            "(deeper fan takes) and Bluesky (fresher, media-leaning) at once. "
                            "Pass the league to aim Reddit at the right subreddit (nba/nfl/"
                            "soccer/etc.); add a topic/team/player to focus it, or omit for the "
                            "broad vibe. Use it when they ask the mood, the reaction, who's "
                            "getting cooked. This is SENTIMENT, not fact: read the room, then "
-                           "give YOUR take — don't mirror it. If the two sources disagree, say "
+                           "give YOUR take - don't mirror it. If the two sources disagree, say "
                            "so. Verify any 'trade/signing' with sports_news before repeating it.",
             "inputSchema": {
                 "type": "object",

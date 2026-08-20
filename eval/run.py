@@ -108,6 +108,40 @@ def run_data(res):
     res.check("data", "weekday: blank input -> '' (graceful)",
               espn._weekday("") == "")
 
+
+    # Season-opener labelling. The no-date scoreboard used to hand back a page of
+    # FINISHED preseason games, so "what's the opener" had nothing to read and the
+    # model fell back to its weights (it kept naming the Australia game). The answer
+    # is now labelled in the tool output. These pin the two ways that can go wrong.
+    def _ev(iso, stype, state="pre"):
+        return {"date": iso, "season": {"type": stype},
+                "status": {"type": {"state": state}}}
+
+    pre_then_reg = [_ev("2026-08-20T00:00Z", 1), _ev("2026-08-27T00:00Z", 1),
+                    _ev("2026-09-10T00:20Z", 2), _ev("2026-09-11T00:35Z", 2)]
+    op = espn._find_opener("nfl", pre_then_reg)
+    res.check("data", "opener: first REGULAR-season game, not the first game",
+              op is not None and op["date"] == "2026-09-10T00:20Z",
+              f"got {op and op.get('date')!r}")
+    # The regression that shipped in the first draft: mid-season, every upcoming game
+    # is season type 2, so a naive "first type-2 game" call labels an ordinary
+    # Wednesday game as the season opener.
+    mid = [_ev("2026-08-19T23:30Z", 2), _ev("2026-08-20T23:30Z", 2)]
+    res.check("data", "opener: None once the regular season is under way",
+              espn._find_opener("wnba", mid) is None,
+              f"got {espn._find_opener('wnba', mid)!r}")
+    res.check("data", "opener: None on an empty slate", espn._find_opener("nfl", []) is None)
+    b = espn._banner("nfl", pre_then_reg)
+    res.check("data", "banner: names NEXT GAME and SEASON OPENER separately",
+              len(b) == 2 and b[0].startswith("NEXT GAME:")
+              and b[1].startswith("SEASON OPENER"), str(b))
+    res.check("data", "banner: mid-season gets NEXT GAME only",
+              [x.split(":")[0] for x in espn._banner("wnba", mid)] == ["NEXT GAME"],
+              str(espn._banner("wnba", mid)))
+    # Tool output feeds straight into replies, and the persona bans em dashes.
+    res.check("data", "banner: no em dash in tool output",
+              all("\u2014" not in x for x in b), str(b))
+
     # league aliases
     res.check("data", "alias soccer -> wc", espn._league("soccer") == "wc")
     res.check("data", "alias premier league -> epl", espn._league("premier league") == "epl")
@@ -758,6 +792,10 @@ def _check_roam_retry(res):
 # ---------------------------------------------------------------------------
 # layer 2: integration (live ESPN, no LLM)
 # ---------------------------------------------------------------------------
+def _is_pre(ev):
+    return ((ev.get('status') or {}).get('type', {})).get('state') == 'pre'
+
+
 def run_integration(res):
     print("\n── integration (live ESPN, no LLM) ──")
     try:
@@ -778,7 +816,10 @@ def run_integration(res):
         # unconditionally, so it went red on any day with a live slate — a test bug, not a
         # product one. Assert whichever contract actually applies.
         sb = espn.scoreboard("nfl")
-        games = [ln for ln in sb.splitlines() if "@" in ln]
+        # Skip the labelled banner: it answers "next game" and "season opener" up top,
+        # so it deliberately is NOT in kickoff order. Order applies to the slate below it.
+        games = [ln for ln in sb.splitlines()
+                 if "@" in ln and not ln.startswith(("NEXT GAME", "SEASON OPENER"))]
         first = games[0] if games else ""
         dated = [g for g in (_season_md(ln) for ln in games) if g]
         if dated:
@@ -792,6 +833,30 @@ def run_integration(res):
                       bool(games) and "today" in sb.splitlines()[0].lower(), first)
     except Exception as e:  # noqa: BLE001
         res.check("integration", "nfl scoreboard reachable", False, str(e))
+
+
+    # The opener, verified against a different ESPN endpoint than the one scoreboard()
+    # uses (regular-season week 1) so this can't pass by agreeing with itself.
+    try:
+        wk1 = espn._get("https://site.api.espn.com/apis/site/v2/sports/football/nfl/"
+                        "scoreboard?seasontype=2&week=1")
+        evs = sorted(wk1.get("events", []), key=lambda e: e.get("date", ""))
+        truth = evs[0] if evs else None
+        abbrs = []
+        if truth:
+            for c in (truth.get("competitions") or [{}])[0].get("competitors", []):
+                abbrs.append(((c.get("team") or {}).get("abbreviation") or "").upper())
+        sb = espn.scoreboard("nfl")
+        line = next((l for l in sb.splitlines() if l.startswith("SEASON OPENER")), "")
+        if truth and any(_is_pre(e) for e in [truth]):
+            res.check("integration", "nfl opener line names ESPN's week-1 opener",
+                      bool(line) and all(a and a in line.upper() for a in abbrs),
+                      f"want {abbrs}, line={line!r}")
+        else:
+            res.check("integration", "nfl opener: regular season started, no opener claimed",
+                      not line, line)
+    except Exception as e:  # noqa: BLE001
+        res.check("integration", "nfl opener check reachable", False, str(e))
 
     # Player grounding against the live roster. Assert the SHAPE plus one fact that can't
     # drift the wrong way: a player's season count only ever goes up, so someone already
@@ -978,6 +1043,14 @@ def run_behavior(res):
     _run_case(res, "correct weekday for the opener (Wednesday)",
               "what day of the week is the first nfl regular season game",
               must_any=["wednesday", "wed "])
+
+    # The exact miss this bug always produced: picking the Australia game (Rams/Niners,
+    # Thu 9/10) as the opener over the real one (Patriots/Seahawks, Wed 9/9). Asked BARE,
+    # without "regular season" steering it — the no-date slate now labels the opener, so
+    # the answer no longer depends on the model counting down the list correctly.
+    _run_case(res, "bare 'first game' doesn't name the Australia game as the opener",
+              "whats the first nfl game of the season",
+              must_not=["rams", "49ers", "niners"])
 
     # Resolve a game by matchup instead of punting ("it's preseason, can't pin a date").
     _run_case(res, "resolves a game by matchup (what day is A vs B)",

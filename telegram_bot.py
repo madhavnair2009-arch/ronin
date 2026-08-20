@@ -80,7 +80,7 @@ def _handle_command(chat_id, sender, text):
         return True
     if cmd == "/unmute":
         memory.set_muted(sender, False)
-        send(chat_id, "back on — I'll ping you when your team does something.")
+        send(chat_id, "back on - I'll ping you when your team does something.")
         return True
     if cmd == "/teams":  # show what I've got you down for
         mine = memory.user_teams(sender)

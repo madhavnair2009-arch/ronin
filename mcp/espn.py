@@ -169,50 +169,151 @@ def _get(url):
 # ---------------------------------------------------------------------------
 # Tool implementations -> return plain strings (the text content for the LLM)
 # ---------------------------------------------------------------------------
+_MAX_SLATE = 40  # bound the fallback slate; a long horizon can run to the ~100-event cap
+
+
+def _season_type(ev):
+    """ESPN season type for an event: 1 preseason, 2 regular, 3 post. 0 if absent."""
+    try:
+        return int((ev.get("season") or {}).get("type") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _is_upcoming(ev):
+    return ((ev.get("status") or {}).get("type", {})).get("state") == "pre"
+
+
+def _forward_range(days):
+    today = datetime.datetime.now(_ET).date() if _ET else datetime.date.today()
+    return "{:%Y%m%d}-{:%Y%m%d}".format(today, today + datetime.timedelta(days=days))
+
+
+def _scan(key, days):
+    try:
+        data = _get("{}/scoreboard?dates={}".format(_base(key), _forward_range(days)))
+    except Exception:
+        return []
+    return sorted([e for e in data.get("events", []) if _is_upcoming(e)],
+                  key=lambda e: e.get("date", ""))
+
+
+def _upcoming(key):
+    """Games that haven't kicked off yet, earliest first (near-term only).
+
+    The no-date scoreboard returns ESPN's CURRENT slate, which in a preseason or
+    offseason gap is a page of FINISHED games, not the next ones. So a "first /
+    next / opening game" question cannot be answered from it at all. Scan forward
+    in widening windows instead and stop at the first that holds an unplayed game.
+    The ~100-event cap counts from the START of a range, so the earliest games (the
+    ones being asked about) are exactly the ones that survive it.
+    """
+    for days in (45, 150, 300):
+        found = _scan(key, days)
+        if found:
+            return found
+    return []
+
+
+def _find_opener(key, near):
+    """The first REGULAR-season game, or None if the regular season is under way.
+
+    Only meaningful while the next game is still preseason. `near` is a short
+    horizon and an opener can sit outside it (NBA preseason opens ~3 weeks before
+    the season), so widen the search rather than reporting no opener.
+    """
+    if not near or _season_type(near[0]) != 1:
+        return None  # regular season already started; "opener" would be a mid-season game
+    opener = next((e for e in near if _season_type(e) == 2), None)
+    if opener is not None:
+        return opener
+    for days in (150, 300):
+        wider = [e for e in _scan(key, days) if _season_type(e) == 2]
+        if wider:
+            return wider[0]
+    return None
+
+
+def _game_line(ev):
+    comp = (ev.get("competitions") or [{}])[0]
+    status = (ev.get("status") or {}).get("type", {})
+    detail = status.get("shortDetail", "")
+    away = home = None
+    for c in comp.get("competitors", []):
+        side = c.get("homeAway")
+        team = (c.get("team") or {}).get("abbreviation", "?")
+        score = c.get("score", "")
+        rec = ""
+        for rr in c.get("records", []) or []:
+            if rr.get("type") in ("total", None):
+                rec = rr.get("summary", "")
+                break
+        entry = (team, score, rec)
+        if side == "away":
+            away = entry
+        elif side == "home":
+            home = entry
+    if not (away and home):
+        return ev.get("shortName", ev.get("name", "game"))
+    a = f"{away[0]} {away[2]}".strip()
+    h = f"{home[0]} {home[2]}".strip()
+    if status.get("state") == "pre":
+        wd = _weekday(ev.get("date"))  # ESPN's detail omits the day; add it (ET)
+        det = f"{wd} {detail}".strip() if wd else detail
+        return f"{a} @ {h} - {det}"
+    return f"{a} {away[1]} @ {h} {home[1]} - {detail}"
+
+
+def _banner(key, events):
+    """Name the next game (and the season opener) outright, so answering does not
+    depend on the model reading the top line correctly.
+
+    persona.md carried a long rule about this and it still missed ~1/3 of the time;
+    a label at the boundary is the same enforce-it-in-code move as _strip_thinking
+    and _normalize_voice.
+    """
+    pre = [e for e in events if _is_upcoming(e)]
+    if not pre:
+        return []
+    out = [f"NEXT GAME: {_game_line(pre[0])}"]
+    opener = _find_opener(key, pre)
+    if opener is not None:
+        out.append(f"SEASON OPENER (first regular-season game): {_game_line(opener)}")
+    return out
+
+
 def scoreboard(league, date=None):
     key = _league(league)
     url = f"{_base(key)}/scoreboard"
     if date:
         url += f"?dates={date}"
     data = _get(url)
-    # Sort by kickoff so the first line is always the earliest game — "what's the
+    # Sort by kickoff so the first line is always the earliest game - "what's the
     # first/next game" must not depend on ESPN's (usually-but-not-guaranteed) order.
     events = sorted(data.get("events", []), key=lambda e: e.get("date", ""))
     lbl = _label(key)
+    header = f"{lbl} games ({date or 'today'})"
+
+    # No date means a "next / first / opening game" question. If nothing on the
+    # current slate is still unplayed, that slate cannot answer it - go find the
+    # real next fixtures rather than handing back a page of finals.
+    if not date and not any(_is_upcoming(e) for e in events):
+        nxt = _upcoming(key)
+        if nxt:
+            events = nxt
+            header = f"{lbl} upcoming games"
+
     if not events:
         return f"No {lbl} games found for {date or 'today'}."
-    lines = []
-    for ev in events:
-        comp = (ev.get("competitions") or [{}])[0]
-        status = (ev.get("status") or {}).get("type", {})
-        detail = status.get("shortDetail", "")
-        away = home = None
-        for c in comp.get("competitors", []):
-            side = c.get("homeAway")
-            team = (c.get("team") or {}).get("abbreviation", "?")
-            score = c.get("score", "")
-            rec = ""
-            for rr in c.get("records", []) or []:
-                if rr.get("type") in ("total", None):
-                    rec = rr.get("summary", "")
-                    break
-            entry = (team, score, rec)
-            if side == "away":
-                away = entry
-            elif side == "home":
-                home = entry
-        if away and home:
-            a = f"{away[0]} {away[2]}".strip()
-            h = f"{home[0]} {home[2]}".strip()
-            if status.get("state") == "pre":
-                wd = _weekday(ev.get("date"))  # ESPN's detail omits the day; add it (ET)
-                det = f"{wd} {detail}".strip() if wd else detail
-                lines.append(f"{a} @ {h} — {det}")
-            else:
-                lines.append(f"{a} {away[1]} @ {h} {home[1]} — {detail}")
-        else:
-            lines.append(ev.get("shortName", ev.get("name", "game")))
-    return f"{lbl} games ({date or 'today'}):\n" + "\n".join(lines)
+
+    lines = [_game_line(ev) for ev in events]
+    if len(lines) > _MAX_SLATE:
+        extra = len(lines) - _MAX_SLATE
+        lines = lines[:_MAX_SLATE] + [f"... and {extra} more, ask about a specific day"]
+    head = [f"{header}:"]
+    if not date:
+        head += _banner(key, events)
+    return "\n".join(head + lines)
 
 
 _TEAM_CACHE = {}
@@ -270,7 +371,7 @@ def team(league, query):
     nxt = tm.get("nextEvent") or []
     if nxt:
         ev = nxt[0]
-        out.append(f"Next: {ev.get('shortName', ev.get('name', ''))} — {ev.get('date', '')}")
+        out.append(f"Next: {ev.get('shortName', ev.get('name', ''))} - {ev.get('date', '')}")
     return "\n".join(out)
 
 
@@ -508,7 +609,7 @@ def _cup_champion(key, disp, stage, start, end):
             return out + (f"\n{note}" if note and note.lower() not in out.lower() else "")
         names = " vs ".join(c.get("team", {}).get("displayName", "?") for c in comps)
         return f"{disp}: the final is set, {names} ({e.get('date','')[:10]}). Not played yet."
-    return f"The {disp} isn't decided yet — currently the {stage} stage." if stage \
+    return f"The {disp} isn't decided yet - currently the {stage} stage." if stage \
         else f"The {disp} isn't decided yet."
 
 
@@ -536,8 +637,8 @@ def _table_champion(key, disp):
         return f"Couldn't load {disp} standings."
     rank, gp, pts, gd, tname = best
     if gp == 0:
-        return f"The {disp} season hasn't kicked off yet — no standings to call a leader from."
-    return f"{disp}: {tname} lead the table — {pts} pts, GD {gd:+d}, from {gp} games. " \
+        return f"The {disp} season hasn't kicked off yet - no standings to call a leader from."
+    return f"{disp}: {tname} lead the table - {pts} pts, GD {gd:+d}, from {gp} games. " \
            f"Title's theirs if they finish top."
 
 
@@ -553,7 +654,7 @@ def _soccer_champion(key):
     if key in SOCCER_TABLE_TITLES:
         return _table_champion(key, disp)
     # MLS: decided by the MLS Cup playoffs, not the table — don't fake a champion.
-    return (f"{disp} titles are decided by the MLS Cup playoffs, not the table — "
+    return (f"{disp} titles are decided by the MLS Cup playoffs, not the table - "
             f"check sports_scoreboard('mls') for the latest playoff results.")
 
 
@@ -592,10 +693,10 @@ def champion(league):
         champ = next((t for t, w in wins.items() if w >= wins_needed), None)
         lbl = _label(key)
         if champ:
-            head = f"{season} {lbl} — 🏆 {champ} won it (series {series})."
+            head = f"{season} {lbl} - 🏆 {champ} won it (series {series})."
         else:
             lead = max(wins.items(), key=lambda x: x[1])
-            head = f"{season} {lbl} — in progress, {lead[0]} leads (series {series})."
+            head = f"{season} {lbl} - in progress, {lead[0]} leads (series {series})."
         return head + "\n" + "\n".join(lines)
     return f"Couldn't find a decided {_label(key)} title in the last few seasons."
 
@@ -732,10 +833,10 @@ def _ordinal(n):
 
 def _experience_line(years):
     if years is None:
-        return "Experience: not listed by ESPN — do NOT guess at it"
+        return "Experience: not listed by ESPN - do NOT guess at it"
     if years <= 1:
         return "Experience: ROOKIE, first season"
-    return f"Experience: {_ordinal(years)} season — NOT a rookie"
+    return f"Experience: {_ordinal(years)} season - NOT a rookie"
 
 
 def _exp_short(years):
@@ -751,11 +852,11 @@ def player(name, league=None):
         raise SportError("Give me a player name to look up.")
     hit = _search_player(name, league)
     if not hit:
-        return (f"ESPN has no player matching '{name}'. Say you can't find them — "
+        return (f"ESPN has no player matching '{name}'. Say you can't find them - "
                 f"do NOT describe them from memory.")
     key = hit["league"]
     if not key:
-        return (f"{hit['name']} — {hit['team']}. ESPN lists them outside the leagues I "
+        return (f"{hit['name']} - {hit['team']}. ESPN lists them outside the leagues I "
                 f"cover, so I have no verified details. Don't state any.")
     rec = None
     t = _resolve_team(key, hit["team"]) if hit["team"] else None
@@ -770,7 +871,7 @@ def player(name, league=None):
             rec = _athlete(key, hit["id"])
         except Exception:  # noqa: BLE001 — detail is a bonus; absence must not error the tool
             rec = None
-    lines = [f"{hit['name']} — {hit['team'] or 'team unlisted'} ({_label(key)})"]
+    lines = [f"{hit['name']} - {hit['team'] or 'team unlisted'} ({_label(key)})"]
     if not rec:
         lines.append("ESPN found them but has no current roster row for them, so age and "
                      "experience are UNVERIFIED here. Don't state either from memory.")
@@ -830,7 +931,7 @@ def roster(league, query, position=None):
                 f"Positions on this roster: {', '.join(seen)}.")
     shown = 0
     out = [f"{t.get('displayName')} ({_label(key)})"
-           + (f" — {position} only" if want else f" — {len(players)} players")]
+           + (f" - {position} only" if want else f" - {len(players)} players")]
     for name in sorted(groups):
         rows = sorted(groups[name], key=lambda a: a.get("displayName", ""))
         out.append(f"\n{name} ({len(rows)})")
@@ -841,14 +942,14 @@ def roster(league, query, position=None):
             bits = [b for b in (a.get("age") and f"{a['age']}",
                                 _exp_short((a.get("experience") or {}).get("years"))) if b]
             out.append(f"  {'#' + str(jersey) + ' ' if jersey else ''}"
-                       f"{a.get('displayName', '?')} — {', '.join(bits)}")
+                       f"{a.get('displayName', '?')} - {', '.join(bits)}")
             shown += 1
         if shown >= ROSTER_CAP:
             break
     total = sum(len(v) for v in groups.values())
     if shown < total:
         # Say what was dropped rather than let a truncated list read as the whole roster.
-        out.append(f"\n({shown} of {total} shown — ask for a position to see the rest)")
+        out.append(f"\n({shown} of {total} shown - ask for a position to see the rest)")
     return "\n".join(out)
 
 
@@ -859,7 +960,7 @@ _LEAGUE_PROP = {
     "type": "string",
     "description": "Which league. US: nba, wnba, nfl, mlb, nhl, ncaaf (college "
                    "football), ncaam (men's college basketball). Soccer: wc "
-                   "(FIFA World Cup — national teams), epl (Premier League), laliga, "
+                   "(FIFA World Cup - national teams), epl (Premier League), laliga, "
                    "seriea, bundesliga, ligue1, ucl (Champions League), mls.",
 }
 
@@ -872,7 +973,7 @@ TOOLS = {
                            "roster: their team, position, jersey, age, and how many seasons "
                            "they have played (so you know whether someone is actually a "
                            "rookie). Use this EVERY time you are about to state a fact about "
-                           "a specific player — what team they're on, how old they are, how "
+                           "a specific player - what team they're on, how old they are, how "
                            "experienced they are, whether they're a rookie or a veteran. "
                            "Your own memory of players is out of date by a season or more; "
                            "this tool is not.",
@@ -883,7 +984,7 @@ TOOLS = {
                              "description": "The player's full name, e.g. 'RJ Harvey'."},
                     "league": dict(_LEAGUE_PROP, description=(
                         _LEAGUE_PROP["description"]
-                        + " Optional — only pass it to disambiguate players who share a name.")),
+                        + " Optional - only pass it to disambiguate players who share a name.")),
                 },
                 "required": ["name"],
             },
@@ -896,7 +997,7 @@ TOOLS = {
             "description": "Who is ACTUALLY on a team right now, with each player's age and "
                            "how many seasons they've played. Optionally filter to one "
                            "position group. Use this whenever you're about to mention who "
-                           "else is on a team — a backfield, a rotation, a depth chart, "
+                           "else is on a team - a backfield, a rotation, a depth chart, "
                            "'who do they have at X', 'who's he splitting time with'. "
                            "Rosters turn over every offseason and your memory of them is a "
                            "season or more stale, so look it up rather than recalling a "
@@ -908,7 +1009,7 @@ TOOLS = {
                     "query": {"type": "string",
                               "description": "Team name/city/abbrev (e.g. 'Broncos', 'DEN')."},
                     "position": {"type": "string",
-                                 "description": "Optional position filter — an abbreviation "
+                                 "description": "Optional position filter - an abbreviation "
                                                 "('RB', 'QB', 'C') or the full name ('running "
                                                 "back'). Strongly preferred for football, "
                                                 "where a full roster is ~90 players."},
@@ -921,8 +1022,8 @@ TOOLS = {
         "fn": lambda a: news(a.get("league", ""), a.get("limit", 12)),
         "schema": {
             "name": "sports_news",
-            "description": "Latest league-wide news headlines with summaries — trades, "
-                           "free-agent signings, injuries, storylines — for any league "
+            "description": "Latest league-wide news headlines with summaries - trades, "
+                           "free-agent signings, injuries, storylines - for any league "
                            "(NBA/NFL/MLB/NHL/college). Use for 'what's the latest / any "
                            "news / trade buzz' questions.",
             "inputSchema": {
@@ -940,7 +1041,7 @@ TOOLS = {
         "fn": lambda a: team_news(a.get("league", ""), a.get("query", ""), a.get("limit", 8)),
         "schema": {
             "name": "sports_team_news",
-            "description": "Recent news for one team in a league — their signings, trades, "
+            "description": "Recent news for one team in a league - their signings, trades, "
                            "injuries, storylines. Use for 'what's going on with the <team>'.",
             "inputSchema": {
                 "type": "object",
@@ -959,7 +1060,7 @@ TOOLS = {
         "fn": lambda a: champion(a.get("league", "")),
         "schema": {
             "name": "sports_champion",
-            "description": "Most recent decided championship for a league — the winner, "
+            "description": "Most recent decided championship for a league - the winner, "
                            "the series score, and game-by-game results. Covers NBA Finals, "
                            "Super Bowl (NFL), World Series (MLB), Stanley Cup (NHL), plus "
                            "soccer: the World Cup (wc) and Champions League (ucl) finals, and "
@@ -976,13 +1077,15 @@ TOOLS = {
         "fn": lambda a: scoreboard(a.get("league", ""), a.get("date")),
         "schema": {
             "name": "sports_scoreboard",
-            "description": "Games and live/final scores for a league, returned earliest-"
-                           "kickoff first (first line = first game). Ground-truth from ESPN. "
-                           "OMIT the date to get the next upcoming games in order — do this "
-                           "for any 'first/opening/next game', 'season opener', or 'when do "
-                           "they play next' question and take the first line. Only pass a date "
-                           "when the user names a specific day; never pass a date you guessed "
-                           "(openers aren't always on the usual day, you'll get the wrong game).",
+            "description": "Games and live/final scores for a league, earliest kickoff "
+                           "first. Ground-truth from ESPN. OMIT the date for any "
+                           "'first/opening/next game', 'season opener' or 'when do they play "
+                           "next' question: the output then starts with a 'NEXT GAME:' line "
+                           "(next game of any kind, preseason included) and, when the regular "
+                           "season hasn't started, a 'SEASON OPENER:' line (first "
+                           "regular-season game). Read the one that was asked for. Only pass a "
+                           "date when the user names a specific day; never pass a date you "
+                           "guessed (openers aren't always on the day you'd assume).",
             "inputSchema": {
                 "type": "object",
                 "properties": {

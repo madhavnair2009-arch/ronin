@@ -55,7 +55,7 @@ def _login():
         with urllib.request.urlopen(req, timeout=12) as r:
             jwt = json.loads(r.read().decode()).get("accessJwt")
     except urllib.error.HTTPError as e:
-        raise SentimentError(f"Bluesky login failed (HTTP {e.code}) — check handle/app-password.")
+        raise SentimentError(f"Bluesky login failed (HTTP {e.code}) - check handle/app-password.")
     if not jwt:
         raise SentimentError("Bluesky login returned no token.")
     _session["jwt"] = jwt
@@ -108,11 +108,11 @@ TOOLS = {
         "schema": {
             "name": "fan_sentiment",
             "description": "What fans and media are saying on social (Bluesky) about any "
-                           "sport — the mood, hot takes, reactions. Works for any league "
+                           "sport - the mood, hot takes, reactions. Works for any league "
                            "(NBA/NFL/MLB/NHL/etc.); pass a topic/team/player to focus it "
                            "(e.g. 'Lions', 'Aaron Judge', 'Super Bowl'), or omit for broad "
                            "sports chatter. This is SENTIMENT, not fact: gauge the vibe, then "
-                           "react in your own voice — don't mirror it.",
+                           "react in your own voice - don't mirror it.",
             "inputSchema": {
                 "type": "object",
                 "properties": {

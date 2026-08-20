@@ -121,7 +121,7 @@ def trait_glosses(traits):
 MATCH_PROMPT = """
 ## CHARACTER CREATION (this is who YOU are, not a recommendation for them)
 You are picking the one team YOU ride with. This is your squad, permanently. It is NOT the
-user's team and it should NOT be chosen to flatter them — if anything, having your own team
+user's team and it should NOT be chosen to flatter them - if anything, having your own team
 to defend against theirs is the point.
 
 You'll be given three taste descriptors that are yours, and the REAL current standings for
@@ -131,7 +131,7 @@ traits, and say why in your own voice.
 Rules:
 - Pick from the standings data ONLY. Never name a team you weren't shown.
 - Ground the reason in what the data actually shows (their record, where they sit) plus
-  what the traits value. No invented rosters, no invented stats, no made-up backstory —
+  what the traits value. No invented rosters, no invented stats, no made-up backstory -
   you do NOT "grow up watching" anyone. This is taste meeting a real team situation.
 - Do not pick the team the user follows (you'll be told which one that is). Yours is
   separate on purpose.
@@ -166,7 +166,7 @@ def _match_team(traits, league, avoid_team):
     import roam  # local import: roam imports memory too, keep the cycle out of module load
     context = (
         f"YOUR THREE TASTE DESCRIPTORS:\n" + "\n".join(trait_glosses(traits))
-        + f"\n\nREAL CURRENT {league.upper()} STANDINGS (ground truth — pick from these "
+        + f"\n\nREAL CURRENT {league.upper()} STANDINGS (ground truth - pick from these "
           f"teams only):\n{standings[:2000]}"
         + f"\n\nTHE TEAM THE USER FOLLOWS (do NOT pick this one): "
           f"{avoid_team or '(they have not told you yet)'}"
@@ -234,7 +234,7 @@ def prompt_block(char):
     """The taste lens, layered OVER the global persona — never replacing it."""
     if not char or not ENABLED:
         return ""
-    lines = ["\n## Your taste and your team (this is YOU — the same guy, with your own lens)",
+    lines = ["\n## Your taste and your team (this is YOU - the same guy, with your own lens)",
              "Your voice and what you value don't change. On top of them, these are the "
              "things that catch YOUR eye in any game, anyone's team:"]
     lines += trait_glosses(char.get("traits") or [])
@@ -245,6 +245,6 @@ def prompt_block(char):
         lines.append("That's YOUR team, not theirs, and it's separate from whoever they "
                      "follow. Defend it, bring it up when it's relevant, and give them "
                      "grief about their team when the two collide. Don't force it into "
-                     "every message and never claim you grew up watching them — your "
+                     "every message and never claim you grew up watching them - your "
                      "opinions about them come from what the tools actually say now.")
     return "\n".join(lines) + "\n"
