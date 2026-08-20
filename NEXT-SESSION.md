@@ -391,6 +391,75 @@ The opener line may only appear when the next game is still preseason. Pinned by
 does what the rule claims before concluding the model is at fault. Two sessions of persona
 tuning went into enforcing a contract the tool never honored.
 
+### 🔮 PARKED — continual learning (design discussion 2026-08-20, nothing built)
+
+Bookmarked for a later session. No code written; this is the thinking so it doesn't have to
+be re-derived.
+
+**Framing: ronin already has three learning loops.** Worth naming before adding a fourth.
+(1) `reflect()` + `decay_affinities()` — allegiances form off real standings and fade when
+not reaffirmed (preference learning WITH forgetting). (2) `grade()` + calibration — takes
+settled against ESPN ground truth, hits raise confidence, misses cut it (anchored to reality,
+not vibes). (3) `digest()` — per-user relationship memory off the session transcript. So the
+real question is not "should ronin learn" but **"what signal is currently thrown away."**
+
+**GATE THIS ON BACKLOG ITEM 1 (calibration deadlines).** If roam-formed takes are landing with
+`deadline: null` they are never graded and loop (2) is silently inert — the same failure mode as
+the grader that had NEVER run (`import time`). Do not stack a second learning system on an
+unverified first one; you'll be debugging two loops with no way to tell which is lying.
+Spot-check `/data/takes.json` for real deadlines first. ~1 hour, gates everything below.
+
+**The gap: nothing records whether a proactive ping LANDED.** `log_sent` stores
+`{uid, key, text, at}` in `outbound.json` (capped 500) and `touch_proactive` stores when.
+Nothing stores what happened next — reply, silence, or mute.
+
+**Proposal A (the main one): engagement feedback as pure counters.**
+- On inbound chat, if a ping went to that uid within ~2h with no intervening user message,
+  mark that ping's key engaged. Aggregate into `engagement.json` as per-`(uid, category)`
+  `{sent, replied}`. Category starts as league, can get finer later.
+- Feed a few computed lines into the **judge prompt that already runs** per user per pass.
+  **Zero new LLM calls** — this is the whole point. Every naive continual-learning design adds
+  a per-user learning pass and so reinvents the exact O(users x leagues) cost cliff the Sonnet
+  routing session was built to avoid. This one rides an existing call.
+- **Needs an exploration floor.** This is a contextual bandit. If the judge only pings what
+  previously earned replies it collapses onto one topic and the model of the user narrows
+  until it's wrong. Reserve a fraction of pings that ignore the learned weights.
+- Confound to remember: reply-rate is polluted by time of day. A 3am ping earns silence for
+  reasons that have nothing to do with the topic.
+- Cheap adjacent win: **a mute is the strongest negative signal in the system** and today it's
+  just a flag (`set_muted`). It should write back into the weights.
+
+**Proposal B: make calibration change BEHAVIOR, not just get quoted.** The track record is
+currently something ronin cites when asked. It could instead alter how it talks: if it's
+systematically overconfident on preseason NBA takes and well-calibrated on NFL, it should hedge
+differently in those two places. Computed free from `calibration.json`, injected as a line in an
+existing prompt. Best intelligence-per-dollar on the list, and it makes the calibration work
+already shipped pay off twice.
+
+**Rejected, with reasons (don't relitigate without new information):**
+- **Fine-tuning.** Fights the core architecture. Ronin's trustworthiness claim is *facts come
+  from tools, never from weights*; baking knowledge into weights moves the wrong way.
+- **Self-editing `persona.md`.** Inverts the project's own philosophy ("enforce at the boundary,
+  prompt rules only hold probabilistically"), has no eval anchor, drifts unboundedly, and
+  destroys reproducibility — the prompt that produced a bug no longer exists.
+
+**Hazards specific to ronin:**
+- **Learning must never cross into FACTS.** Preferences, engagement, calibration, tone: fine.
+  The moment ronin learns a fact because a user asserted it, the whole hallucination bug class
+  that `sports_player`/`sports_roster` closed comes back through a door we built ourselves.
+- **Prefer learning that stores NUMBERS over learning that stores TEXT.** We already ate a
+  prompt-injection RCE. Persisting user-authored text into future prompts is an injection
+  surface, and a STORED one is worse than a reflected one: it fires every subsequent turn, for
+  that user, forever. An integer can't carry a payload. (Note `digest()` already stores text
+  profiles, so that surface exists today and deserves a look regardless.)
+- **uid-scope every new key.** New accumulating state is exactly where the shared-cursor bug
+  would recur; that's the documented pattern-to-watch.
+- **Version the schema from day one.** The write-once character showed how painful accumulated
+  per-user state is to change once people have some.
+
+**Recommended order when picked up:** verify calibration deadlines -> Proposal A (counters +
+exploration floor) -> Proposal B. Proposal A is about one session.
+
 ### ⭐ NEXT UP (updated 2026-08-20, roughly in priority order)
 
 **A. ✅ Closed 2026-08-20** — the season-opener bug. Root cause was NOT what this
@@ -416,6 +485,10 @@ console.anthropic.com, set a workspace spend limit, update local `~/ronin/.env` 
 values are still pre-rotation). Also confirm the older Telegram/Bsky keys were revoked at source.
 
 **E. Repo hygiene.** ~114 loose `sess_*.json` files in the repo root (gitignored, but noise).
+
+**F. Continual learning — parked, see the 🔮 PARKED section directly above.** Not scheduled;
+revisit when the calibration loop is verified and there are enough testers for engagement
+signal to mean anything.
 
 1. **Watch calibration in the wild — now the *mechanism* is proven, the open question is the
    judge's inputs.** The grader fires and grades correctly; what's still unverified is whether
