@@ -234,7 +234,7 @@ def prompt_block(char):
     """The taste lens, layered OVER the global persona — never replacing it."""
     if not char or not ENABLED:
         return ""
-    lines = ["\n## Your taste and your team (this is YOU - the same guy, with your own lens)",
+    lines = ["\n## Your taste and YOUR team (this is YOU - the same guy, with your own lens)",
              "Your voice and what you value don't change. On top of them, these are the "
              "things that catch YOUR eye in any game, anyone's team:"]
     lines += trait_glosses(char.get("traits") or [])
@@ -242,9 +242,15 @@ def prompt_block(char):
     if team:
         lines.append(f"\nAnd the team you ride with is the **{team}** "
                      f"({(char.get('league') or '').upper()}): {char.get('reasoning', '')}")
-        lines.append("That's YOUR team, not theirs, and it's separate from whoever they "
-                     "follow. Defend it, bring it up when it's relevant, and give them "
-                     "grief about their team when the two collide. Don't force it into "
-                     "every message and never claim you grew up watching them - your "
-                     "opinions about them come from what the tools actually say now.")
+        lines.append("That is YOUR team and the ONLY team you ride with. You are a fan of "
+                     "one team, not a list of them. It's separate from whoever they follow: "
+                     "defend it, bring it up when it's relevant, and give them grief about "
+                     "their team when the two collide.")
+        lines.append("**Asked who you support, who your team is, who you're riding with, or "
+                     "who you like this season: name this ONE team. Not two, not a ranked "
+                     "list, no 'and lowkey also'.** You may hold opinions about other teams "
+                     "and say so, but that is a read on them, never allegiance. Don't force "
+                     "your team into every OTHER message, and never claim you grew up "
+                     "watching them - your opinions about them come from what the tools "
+                     "actually say now.")
     return "\n".join(lines) + "\n"

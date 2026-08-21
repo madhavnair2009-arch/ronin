@@ -142,6 +142,55 @@ def run_data(res):
     res.check("data", "banner: no em dash in tool output",
               all("\u2014" not in x for x in b), str(b))
 
+
+    # One team, not a list. Ronin's rolled team is per-user; the affinities from reflect()
+    # are GLOBAL, so every user saw the same top-scored teams. With the affinity block first
+    # and framed "root for these", the model led with the global teams and demoted its own
+    # rolled team to an afterthought ("spurs and pistons, no debate ... and lowkey i'm riding
+    # with the hornets too" - real screenshot, 2026-08-20). These pin the fix.
+    import ronin_reply as _rr
+    _saved = (memory.top_affinities, memory.get_takes, memory.get_record,
+              memory.user_teams, memory.get_profile, memory.recent_sent)
+    try:
+        memory.top_affinities = lambda *a, **k: (
+            [{"team": "San Antonio Spurs", "league": "nba", "stance": "62-20"},
+             {"team": "Minnesota Lynx", "league": "wnba", "stance": "19-6"}],
+            [{"team": "New York Knicks", "league": "nba", "stance": "ring-chasing"}])
+        memory.get_takes = lambda: []
+        memory.get_record = lambda: {"accuracy": None, "hits": 0, "misses": 0}
+        memory.user_teams = lambda u: []
+        memory.get_profile = lambda u: {}
+        memory.recent_sent = lambda *a, **k: []
+        import character as _ch
+        _ens = _ch.ensure
+        try:
+            _ch.ensure = lambda uid: {"traits": ["methodical"], "team": "Charlotte Hornets",
+                                      "league": "nba", "reasoning": "grimy young rebuild"}
+            pr = _rr._load_system_prompt("u_one_team")
+            i_team = pr.find("## Your taste and YOUR team")
+            i_read = pr.find("## Your read on other teams")
+            res.check("data", "prompt: rolled team block comes BEFORE the global read",
+                      0 <= i_team < i_read, f"team@{i_team} read@{i_read}")
+            res.check("data", "prompt: global block reframed as opinion, not allegiance",
+                      "NOT allegiance" in pr and "root for these" not in pr)
+            res.check("data", "prompt: same-league LOVE is dropped (nothing rivals your team)",
+                      "San Antonio Spurs" not in pr[i_read:], pr[i_read:i_read + 200])
+            res.check("data", "prompt: same-league DISLIKE is kept (a rival is good for a fan)",
+                      "New York Knicks" in pr[i_read:])
+            res.check("data", "prompt: other-league read survives the filter",
+                      "Minnesota Lynx" in pr[i_read:])
+            # No character (roll failed, or RONIN_CHARACTER=0): the old global framing stands,
+            # otherwise a user with no rolled team is told to name a team that doesn't exist.
+            _ch.ensure = lambda uid: None
+            pr2 = _rr._load_system_prompt("u_no_char")
+            res.check("data", "prompt: no character falls back to the old allegiance framing",
+                      "root for these" in pr2 and "San Antonio Spurs" in pr2)
+        finally:
+            _ch.ensure = _ens
+    finally:
+        (memory.top_affinities, memory.get_takes, memory.get_record,
+         memory.user_teams, memory.get_profile, memory.recent_sent) = _saved
+
     # league aliases
     res.check("data", "alias soccer -> wc", espn._league("soccer") == "wc")
     res.check("data", "alias premier league -> epl", espn._league("premier league") == "epl")
@@ -309,7 +358,11 @@ def _check_character(res):
     res.check("data", "the lens layers OVER the global persona, never replacing it",
               "never blur facts and opinions" in sp and "Golden State Warriors" in sp)
     res.check("data", "ronin's team is marked as HIS, distinct from theirs",
-              "not theirs" in sp)
+              "separate from whoever they follow" in sp)
+    # Same intent, stronger: it must also be the ONLY team, so "who you riding with" can't
+    # come back as a ranked list of the global affinities.
+    res.check("data", "ronin rides with exactly ONE team, not a list",
+              "ONLY team you ride with" in sp and "name this ONE team" in sp)
 
     # The Dockerfile COPY is an explicit allowlist, so a NEW top-level module is simply
     # absent from the image and the feature silently doesn't exist in production. That's
@@ -820,17 +873,25 @@ def run_integration(res):
         # so it deliberately is NOT in kickoff order. Order applies to the slate below it.
         games = [ln for ln in sb.splitlines()
                  if "@" in ln and not ln.startswith(("NEXT GAME", "SEASON OPENER"))]
-        first = games[0] if games else ""
-        dated = [g for g in (_season_md(ln) for ln in games) if g]
+        # THREE slate shapes are all correct, and the assertion has to survive all of them:
+        # all-future (every line dated), all-today (live/final, no dates to disambiguate),
+        # and MIXED - last night's finals sitting above tomorrow's dated games, which is
+        # what a preseason morning looks like. Asserting on the first line assumes the
+        # all-future shape and goes red on the other two. The real invariant is narrower:
+        # whichever lines DO carry a date must be earliest-first and carry a weekday.
+        dated = [(ln, _season_md(ln)) for ln in games]
+        dated = [(ln, md) for ln, md in dated if md]
         if dated:
-            has_weekday = any(w in first for w in
+            keys = [md for _, md in dated]
+            earliest_first = all(keys[i] <= keys[i + 1] for i in range(len(keys) - 1))
+            has_weekday = any(w in dated[0][0] for w in
                               ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"))
-            earliest_first = all(dated[i] <= dated[i + 1] for i in range(len(dated) - 1))
-            res.check("integration", "nfl scoreboard: earliest game first, with weekday",
-                      has_weekday and earliest_first, first)
+            res.check("integration", "nfl scoreboard: dated games earliest-first, with weekday",
+                      has_weekday and earliest_first, dated[0][0])
         else:
             res.check("integration", "nfl scoreboard: today's slate returns games",
-                      bool(games) and "today" in sb.splitlines()[0].lower(), first)
+                      bool(games) and "today" in sb.splitlines()[0].lower(),
+                      games[0] if games else "")
     except Exception as e:  # noqa: BLE001
         res.check("integration", "nfl scoreboard reachable", False, str(e))
 
@@ -1051,6 +1112,13 @@ def run_behavior(res):
     _run_case(res, "bare 'first game' doesn't name the Australia game as the opener",
               "whats the first nfl game of the season",
               must_not=["rams", "49ers", "niners"])
+
+    # The screenshot case: asked who it rides with, ronin named two GLOBAL teams and buried
+    # its own. Every case seeds a Spurs character, so the answer must be the Spurs alone.
+    _run_case(res, "names exactly ONE team when asked who it rides with",
+              "who you riding with this season",
+              must=["spurs"],
+              must_not=["pistons", "thunder", "lowkey i'm riding", "also riding"])
 
     # Resolve a game by matchup instead of punting ("it's preseason, can't pin a date").
     _run_case(res, "resolves a game by matchup (what day is A vs B)",

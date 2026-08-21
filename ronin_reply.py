@@ -89,25 +89,50 @@ def _load_system_prompt(sender_id=None):
             verb = "nailed" if t["status"] == "hit" else "whiffed on"
             line.append(f"- you {verb} \"{t['subject']}\"" + (f" ({t['outcome']})" if t.get("outcome") else ""))
         persona += "\n".join(line) + "\n"
-    # Its allegiances: the teams ronin roots for / against (formed by the reflection pass).
-    loves, dislikes = memory.top_affinities()
-    if loves or dislikes:
-        lines = ["\n## Your allegiances right now (root for these, argue for them)"]
-        for a in loves:
-            lines.append(f"- ❤️ **{a['team']}** ({a['league'].upper()}): {a['stance']}")
-        for a in dislikes:
-            lines.append(f"- 💢 **{a['team']}** ({a['league'].upper()}): {a['stance']}")
-        persona += "\n" + "\n".join(lines) + "\n"
     # WHO THIS PERSON'S RONIN IS: the rolled taste lens + signature team. Layered on top
-    # of the global persona and the global allegiances above, never replacing them — same
-    # voice, same values, personal flavor. Rolled once, on first contact, then it's a
-    # dict read. A user whose roll hasn't landed yet just gets the global ronin.
+    # of the global persona - same voice, same values, personal flavor. Rolled once, on
+    # first contact, then it's a dict read. A user whose roll hasn't landed yet just gets
+    # the global ronin.
+    #
+    # This block sits BEFORE the global reads below on purpose. With the old ordering the
+    # model anchored on the global list and answered "who you riding with this season" with
+    # the two top-scored GLOBAL teams, demoting its own rolled team to a "lowkey i'm riding
+    # with them too" afterthought (real screenshot, 2026-08-20). Same content, wrong order.
+    char = None
     if sender_id is not None:
         try:
             import character
-            persona += character.prompt_block(character.ensure(sender_id))
-        except Exception as e:  # noqa: BLE001 — a failed roll must never cost them a reply
+            char = character.ensure(sender_id)
+            persona += character.prompt_block(char)
+        except Exception as e:  # noqa: BLE001 - a failed roll must never cost them a reply
             print(f"[reply] character layer skipped: {e}", file=sys.stderr)
+    # Its READ on other teams: formed by the reflection pass off real standings, and GLOBAL
+    # (every user sees the same list - reflect() is O(leagues) and per-user affinities would
+    # make it O(users x leagues), the cost cliff the model routing was built to avoid).
+    #
+    # So these are opinions, NOT allegiance. Ronin rides with exactly one team: the rolled
+    # one above. Positive reads in that team's league are dropped so nothing competes with
+    # it; NEGATIVE ones are kept on purpose, a rival in your own league is good for a fan.
+    loves, dislikes = memory.top_affinities()
+    own_league = ((char or {}).get("league") or "").lower()
+    has_own_team = bool((char or {}).get("team"))
+    if own_league and has_own_team:
+        loves = [a for a in loves if (a.get("league") or "").lower() != own_league]
+    if loves or dislikes:
+        if has_own_team:
+            lines = ["\n## Your read on other teams (opinions, NOT allegiance)"]
+        else:
+            lines = ["\n## Your allegiances right now (root for these, argue for them)"]
+        for a in loves:
+            lines.append(f"- {'👍' if has_own_team else '❤️'} **{a['team']}** "
+                         f"({a['league'].upper()}): {a['stance']}")
+        for a in dislikes:
+            lines.append(f"- 💢 **{a['team']}** ({a['league'].upper()}): {a['stance']}")
+        if has_own_team:
+            lines.append("Teams you rate or don't, off real results. This is NOT who you ride "
+                         "with. Asked who you support, who your team is, or who you're riding "
+                         "with: name your ONE team above and nothing off this list.")
+        persona += "\n" + "\n".join(lines) + "\n"
     # You: relationship memory so ronin talks like it knows this person. A person can
     # follow one team per league (e.g. 49ers in NFL AND Warriors in NBA), so list them
     # all and let ronin pick the right one for whatever sport comes up.
