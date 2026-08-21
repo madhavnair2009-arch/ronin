@@ -191,6 +191,26 @@ def run_data(res):
         (memory.top_affinities, memory.get_takes, memory.get_record,
          memory.user_teams, memory.get_profile, memory.recent_sent) = _saved
 
+
+    # Affinity stances are GLOBAL (every user reads the same ones), so "my Spurs" makes ronin
+    # claim a team that isn't the one he rides with. That's how "closed my spurs out 4-1"
+    # reached a user whose ronin rides with the Pistons. Prompt rules hold only
+    # probabilistically, so the write path strips it deterministically.
+    import roam as _roam
+    _T = {"San Antonio Spurs", "New York Knicks", "Oklahoma City Thunder"}
+    res.check("data", "stance: 'my Spurs' -> 'the Spurs'",
+              _roam._depossess("closed my Spurs out 4-1", _T) == "closed the Spurs out 4-1")
+    res.check("data", "stance: lowercase 'my spurs' too (ronin types lowercase)",
+              _roam._depossess("my spurs got run off", _T) == "the spurs got run off")
+    res.check("data", "stance: full team name, longest match wins",
+              _roam._depossess("beat my San Antonio Spurs", _T) == "beat the San Antonio Spurs")
+    res.check("data", "stance: 'my take' / 'my guy' are NOT team claims, left alone",
+              _roam._depossess("that's my take and my guy is fine", _T)
+              == "that's my take and my guy is fine")
+    res.check("data", "stance: no team named -> unchanged",
+              _roam._depossess("64-18 is the real best record", _T)
+              == "64-18 is the real best record")
+
     # league aliases
     res.check("data", "alias soccer -> wc", espn._league("soccer") == "wc")
     res.check("data", "alias premier league -> epl", espn._league("premier league") == "epl")

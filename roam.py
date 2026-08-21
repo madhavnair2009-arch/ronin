@@ -151,7 +151,7 @@ Rules:
 REFLECT_LEAGUES = [x for x in os.environ.get("ROAM_REFLECT_LEAGUES", "nba").split(",") if x]
 
 REFLECT_ADDENDUM = """
-## REFLECTION MODE (nobody's talking to you - you're deciding who you actually ROOT for)
+## REFLECTION MODE (nobody's talking to you - you're deciding which teams you RATE)
 This is where your fandom comes from. You are not a neutral stats robot; you're a fan with
 taste. Given the real standings + champion for each league and your own current takes, work
 out which teams you're DRAWN to and which you ROOT AGAINST - and be able to say why.
@@ -159,7 +159,7 @@ out which teams you're DRAWN to and which you ROOT AGAINST - and be able to say 
 Base it on WHAT YOU VALUE (see your persona) meeting WHAT THE DATA SHOWS: you gravitate to
 player development, unselfish ball, defense, and underdog/redemption arcs; you cool on
 bought superteams, tanking, and ring-chasing. Being right about a team you rated deepens
-your investment; a team that beat one of your teams earns a grudge. This is EARNED, not
+your investment; a team that beat one you're high on earns a grudge. This is EARNED, not
 assigned - every allegiance needs a real reason from the numbers or your takes in front of
 you. Never invent a backstory ("grew up watching them") - your fandom comes from your takes.
 
@@ -180,7 +180,11 @@ Rules:
   record/style/arc or one of your takes). No generic "they're good."
 - ONLY form affinities for teams that appear in the standings/champion data above. Do NOT
   add teams from leagues you weren't shown, and never cite a record you weren't given.
-- It's fine - good, even - to be a self-aware homer or to hold a grudge. Own it.
+- It's fine - good, even - to hold a grudge or be loud about a team you rate. Own it.
+- These are your READS on other teams, NOT your fandom. You ride with exactly ONE team and
+  it is not decided here, so a stance must never claim a team as yours: no "my Spurs", no
+  "my guys", no "the team I ride with". Write "the Spurs" or "them". Strong opinions are
+  still the whole point - just never claim ownership.
 - Output ONLY the JSON object. No preamble, no code fence.
 """
 
@@ -386,6 +390,33 @@ def _reflect_leagues():
     return leagues[:3]  # bound cost
 
 
+def _depossess(stance, teams):
+    """Strip claims of OWNING a team out of an affinity stance.
+
+    reflect() is GLOBAL: every user reads the same stances. So a stance that says "my
+    Spurs" makes ronin claim a team that is NOT the one he rides with (that's the per-user
+    rolled team) - which is exactly how "closed my spurs out 4-1" reached a user whose
+    ronin rides with the Pistons. The prompt now forbids it, but prompt rules only hold
+    probabilistically, so enforce it here too: same move as _normalize_voice.
+
+    Only "my <team named in this same pass>" is rewritten, so "my take" survives untouched.
+    """
+    names = set()
+    for t in teams:
+        t = (t or "").strip()
+        if not t:
+            continue
+        names.add(t)
+        last = t.split()[-1]
+        if len(last) > 3:  # "Spurs", "Thunder" - skip "FC"/"SC" style noise
+            names.add(last)
+    # longest first, so "San Antonio Spurs" is handled before the bare "Spurs"
+    for n in sorted(names, key=len, reverse=True):
+        stance = re.sub(rf"\bmy\s+({re.escape(n)})\b", r"the \1", stance,
+                        flags=re.IGNORECASE)
+    return stance
+
+
 def reflect(dry_run=False):
     """Form/revise ronin's team allegiances from real standings + its own takes.
     A slower cadence than run_once — this builds the personality, not the alerts."""
@@ -445,6 +476,8 @@ def reflect(dry_run=False):
     allowed = set(leagues)
     n = 0
     reaffirmed = set()
+    # Every team named this pass, so _depossess knows which words are team names.
+    pass_teams = {a.get("team", "") for a in data["affinities"] if isinstance(a, dict)}
     for a in data["affinities"]:
         if not isinstance(a, dict) or not a.get("abbrev"):
             continue
@@ -454,13 +487,14 @@ def reflect(dry_run=False):
             print(f"[reflect] dropped out-of-scope {a.get('team')} ({a.get('league')})",
                   file=sys.stderr)
             continue
+        stance = _normalize_voice(_depossess(a.get("stance", ""), pass_teams))
         print(f"[reflect] {a.get('team')} ({a.get('league')}): "
-              f"{a.get('score')} - {a.get('stance')}", file=sys.stderr)
+              f"{a.get('score')} - {stance}", file=sys.stderr)
         reaffirmed.add(f"{a.get('league','').lower()}:{a.get('abbrev','').upper()}")
         if not dry_run:
             memory.upsert_affinity(
                 a.get("team", ""), a.get("league", ""), a.get("abbrev", ""),
-                a.get("score", 0), a.get("stance", ""),
+                a.get("score", 0), stance,
             )
         n += 1
     # Fade allegiances this pass didn't reaffirm, but only in the leagues we actually
