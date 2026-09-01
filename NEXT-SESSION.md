@@ -1,7 +1,7 @@
 # ronin — next-session handoff
 
 Cold-start brief for picking this back up. For the full architecture see `OVERVIEW.md`,
-for the build log see `CHANGELOG.md`. Last worked: **2026-08-20**.
+for the build log see `CHANGELOG.md`. Last worked: **2026-09-01**.
 
 ---
 
@@ -14,10 +14,14 @@ autonomous **roam** loop (forms takes, proactively pings, reflects on allegiance
 ## Live status
 - **Deployed & healthy** on Fly.io — app **`ronin-sports`** (region `iad`, one machine).
 - Repo: **github.com/madhavnair2009-arch/ronin** — local `main` == `origin/main` == deployed
-  (last commit `20dc0af`). Everything below is live. Harness **121/121**
-  (data 93 / integration 14 / behavior 14) — fully green for the first time; the long-standing
-  opener flake is fixed, see below. Two behavior cases go red whenever DuckDuckGo is
-  unreachable (that's item C, not a product bug) — re-run before believing them.
+  (last commit `5ea446b`). Everything below is live. Harness **134/134**
+  (data 105 / integration 14 / behavior 15) — fully green. Two behavior cases go red whenever
+  DuckDuckGo is unreachable (that's item C, not a product bug) — re-run before believing them.
+  DDG went down mid-session twice, so this is not rare.
+- **Docs:** `NEXT-SESSION.md` (this file, the engineering backlog) and
+  **`VOICE-AND-DISTILL-BRIEF.md`** (added 2026-08-30) — a self-contained cold-start brief for a
+  SEPARATE project on distillation + voice. Drop that one into a Claude Desktop project; it
+  needs no repo access. Don't let the two drift into contradicting each other.
 - **Tool surface is 8:** `sports_scoreboard`, `sports_standings`, `sports_team`, `sports_news`,
   `sports_team_news`, `sports_champion`, **`sports_player`**, **`sports_roster`** (last two added
   2026-08-16/17). Plus `fan_sentiment` (mcp/fan.py) and `web_search` (mcp/web.py). The firewall
@@ -40,7 +44,76 @@ autonomous **roam** loop (forms takes, proactively pings, reflects on allegiance
 
 ---
 
-## What this session shipped (2026-08-16 → 17)
+## What the 2026-08-19 → 30 session shipped
+
+Two user-visible bugs and a research pass. **Both bugs came from the owner's own Telegram
+screenshots again** — that's now six straight found by using the thing rather than by testing it.
+Harness 112 → **134**.
+
+**1. The season opener (`500eb8d`).** Closed the longest-standing red in the harness. The
+diagnosis on record was wrong and would have made things worse — full writeup in the ✅ CLOSED
+section below. Short version: ESPN's no-date scoreboard returns the CURRENT slate, not upcoming
+games, so in the preseason gap it was 16 finished games and the persona rule built on it could
+never work. Now `_upcoming()` scans forward and `_banner()` labels `NEXT GAME:` / `SEASON OPENER:`
+outright.
+
+**2. Em-dash sweep (`500eb8d`).** 83 em dashes removed from every runtime string across
+`mcp/*.py`, `roam.py`, `ronin_reply.py`, `character.py`, `telegram_bot.py`. See the gotcha below —
+the roam prompt addenda were the interesting part.
+
+**3. One team, not a list (`207d821`).** Asked "who you riding with this season" on a second
+account, ronin said *"spurs and pistons, no debate"* and demoted its own rolled team to *"and
+lowkey i'm riding with the hornets too."* It LOOKED like a per-user leak because both accounts
+named the Pistons. It wasn't: the roll works fine (that account rolled Charlotte). Spurs +0.90 and
+Pistons +0.78 are GLOBAL affinities from `reflect()`, and the prompt was letting them win — the
+global block came first, listed four teams with ❤️ emphasis under the header "root for these,
+argue for them", while the rolled team came last, alone, told "don't force it into every message."
+The model did exactly what it was told. Fixed by reframing the global block as
+`## Your read on other teams (opinions, NOT allegiance)`, moving the character block BEFORE it,
+dropping same-league positive reads, and rewriting `character.prompt_block` to say ONE team.
+**Same-league DISLIKES are kept on purpose** — a rival in your own league is good for a fan.
+
+**4. "my Spurs" in the stances (`2fb676f`).** Verifying #3 surfaced the residue: ronin said
+*"closed MY SPURS out 4-1"* while riding with the Pistons. That text was quoted verbatim from the
+stored Knicks affinity stance, authored back when affinities WERE ronin's allegiances. The prompt
+caused it directly: `REFLECT_ADDENDUM` said *"a team that beat one of YOUR TEAMS earns a grudge."*
+Fixed in three places: reframed the prompt, added **`_depossess()`** to enforce it deterministically
+at the write boundary, and ran stances through `_normalize_voice` on write. Then migrated the live
+volume (backed up first; dry-run showed 2 of 8 stances changing, exactly the two predicted).
+
+**5. Research: Gemma 4 E2B + NVIDIA PersonaPlex.** No code. Findings live in
+`VOICE-AND-DISTILL-BRIEF.md` and the "Distilling Ronin" artifact. Headline for a future session:
+**PersonaPlex doesn't tool-call either — it pre-loads facts into the role prompt**, which is a
+working answer to "how does a 200ms conversation wait on an ESPN lookup." `_load_system_prompt`
+is already most of a briefing assembler.
+
+### Gotchas earned 2026-08-19 → 30 (don't relearn these)
+- **When a prompt rule "keeps not holding", check the tool actually does what the rule claims.**
+  Two sessions of persona tuning went into enforcing a `sports_scoreboard` contract that never
+  existed. The model was obeying; the tool was lying. Check the tool FIRST.
+- **Order matters as much as content in the system prompt.** #3 was not a missing rule, a bad
+  rule, or a broken feature. Both blocks were correct and present; the global one just came first
+  and shouted louder. When output looks like the wrong thing won, read the prompt in order before
+  assuming something is missing.
+- **Reframing a header doesn't rewrite stored data.** #4 survived #3 because the stance STRINGS on
+  the volume still carried the old framing. Any prompt reframe over persisted text needs a
+  migration, or the old wording keeps talking.
+- **Em dashes hid in the roam prompt ADDENDA**, not just tool output — `ROAM_ADDENDUM`,
+  `GRADE_ADDENDUM`, `DIGEST_ADDENDUM` were modelling the exact punctuation the persona bans.
+  Also: grep misses them. On Python 3.12 f-strings tokenize as `FSTRING_MIDDLE`, not `STRING`, so
+  a naive `tokenize` scan skips every f-string — which is where most output text lives.
+  **`_EMDASH` in `ronin_reply.py` must keep its em dash**; that regex IS the guard.
+- **The integration slate test has THREE shapes, not two.** all-future (every line dated),
+  all-today (live/final, undated), and MIXED — last night's finals above tomorrow's dated games,
+  which is what a preseason morning looks like. Assert only that whichever lines carry a date are
+  earliest-first; asserting on the first line goes red on two of the three shapes.
+- **Verify a failure is pre-existing before calling it a regression.** Twice this session a red
+  looked like my change and wasn't: one was DDG being down, one was a case that runs 2/3 before
+  and 1/3 after (noise at n=3). `git stash` and re-run costs one command.
+
+---
+
+## What the 2026-08-16 → 17 session shipped
 
 Three bugs and one feature. **Every bug came from the owner's own Telegram screenshots, and all
 three were invisible to a harness that was green at 71/71** — the tests only looked where we'd
@@ -163,7 +236,7 @@ python3 mcp/espn.py selftest
 ---
 
 ## Open items / next up (rough priority)
-> **Start here: the ⭐ NEXT UP block further down** (updated 2026-08-20) is the current queue.
+> **Start here: the ⭐ NEXT UP block further down** (updated 2026-09-01) is the current queue.
 > Everything above it in this section is historical context for how the system got here.
 
 **Shipped 2026-07-20/21 (all live):** reliability pass (judge-timeout retry, null-confidence
@@ -460,7 +533,7 @@ already shipped pay off twice.
 **Recommended order when picked up:** verify calibration deadlines -> Proposal A (counters +
 exploration floor) -> Proposal B. Proposal A is about one session.
 
-### ⭐ NEXT UP (updated 2026-08-20, roughly in priority order)
+### ⭐ NEXT UP (updated 2026-09-01, roughly in priority order)
 
 **A. ✅ Closed 2026-08-20** — the season-opener bug. Root cause was NOT what this
 doc predicted; the writeup is directly above and worth reading before trusting any
@@ -489,6 +562,19 @@ values are still pre-rotation). Also confirm the older Telegram/Bsky keys were r
 **F. Continual learning — parked, see the 🔮 PARKED section directly above.** Not scheduled;
 revisit when the calibration loop is verified and there are enough testers for engagement
 signal to mean anything.
+
+**G. Two users have no rolled character.** `8658198250` and `8442892546` both read
+`character: None`. Possibly benign — they may only have sent `/start`, and commands run
+synchronously outside `reply()`, so the roll never fires. But `character.ensure` is wrapped in a
+`try/except` that only logs to stderr, which is the same quiet-failure shape that let
+`character.py` deploy green while doing nothing. **Confirm rather than assume:** a tester whose
+roll silently never lands just gets the generic ronin and you'd never know. Check with
+`memory.get_character("<uid>")` and the stderr logs.
+
+**H. Voice + distillation — a SEPARATE project, see `VOICE-AND-DISTILL-BRIEF.md`.** Nothing to do
+in this repo yet, with one exception that is cheap now and impossible to backfill: **start logging
+`_judge` calls as (input, JSON output) pairs, and full chat transcripts.** Those are the training
+sets for a distilled judge and a voice fine-tune respectively. Neither exists today.
 
 1. **Watch calibration in the wild — now the *mechanism* is proven, the open question is the
    judge's inputs.** The grader fires and grades correctly; what's still unverified is whether
