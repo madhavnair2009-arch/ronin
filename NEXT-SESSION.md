@@ -14,8 +14,9 @@ autonomous **roam** loop (forms takes, proactively pings, reflects on allegiance
 ## Live status
 - **Deployed & healthy** on Fly.io — app **`ronin-sports`** (region `iad`, one machine).
 - Repo: **github.com/madhavnair2009-arch/ronin** — local `main` == `origin/main` == deployed
-  (last commit `5ea446b`). Everything below is live. Harness **134/134**
-  (data 105 / integration 14 / behavior 15) — fully green. Two behavior cases go red whenever
+  (last commit `0854dca`). Everything below is live. Harness **137/138**
+  (data 109 / integration 14 / behavior 14) — the one red is the documented RJ Harvey flake
+  (verified 3/3 on re-run; the tool output is correct). Two behavior cases go red whenever
   DuckDuckGo is unreachable (that's item C, not a product bug) — re-run before believing them.
   DDG went down mid-session twice, so this is not rare.
 - **Docs:** `NEXT-SESSION.md` (this file, the engineering backlog) and
@@ -87,7 +88,7 @@ volume (backed up first; dry-run showed 2 of 8 stances changing, exactly the two
 working answer to "how does a 200ms conversation wait on an ESPN lookup." `_load_system_prompt`
 is already most of a briefing assembler.
 
-**6. The opener gap, caught on the way out (`<this commit>`).** The first opener fix only
+**6. The opener gap, caught on the way out (`0854dca`).** The first opener fix only
 labelled `SEASON OPENER:` while the next game was still PRESEASON. Once preseason ended (9/1) every
 upcoming game was season type 2, so the label silently vanished — during the exact week before
 kickoff when people actually ask. Records are the real signal: before kickoff every team is 0-0.
