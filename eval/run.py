@@ -113,9 +113,13 @@ def run_data(res):
     # FINISHED preseason games, so "what's the opener" had nothing to read and the
     # model fell back to its weights (it kept naming the Australia game). The answer
     # is now labelled in the tool output. These pin the two ways that can go wrong.
-    def _ev(iso, stype, state="pre"):
+    def _ev(iso, stype, state="pre", rec="0-0"):
+        # Real ESPN events always carry records, and _season_started reads them, so the
+        # fixtures have to as well or they test a shape that never occurs.
         return {"date": iso, "season": {"type": stype},
-                "status": {"type": {"state": state}}}
+                "status": {"type": {"state": state}},
+                "competitions": [{"competitors": [
+                    {"records": [{"type": "total", "summary": rec}]}]}]}
 
     pre_then_reg = [_ev("2026-08-20T00:00Z", 1), _ev("2026-08-27T00:00Z", 1),
                     _ev("2026-09-10T00:20Z", 2), _ev("2026-09-11T00:35Z", 2)]
@@ -126,7 +130,7 @@ def run_data(res):
     # The regression that shipped in the first draft: mid-season, every upcoming game
     # is season type 2, so a naive "first type-2 game" call labels an ordinary
     # Wednesday game as the season opener.
-    mid = [_ev("2026-08-19T23:30Z", 2), _ev("2026-08-20T23:30Z", 2)]
+    mid = [_ev("2026-08-19T23:30Z", 2, rec="14-9"), _ev("2026-08-20T23:30Z", 2, rec="8-15")]
     res.check("data", "opener: None once the regular season is under way",
               espn._find_opener("wnba", mid) is None,
               f"got {espn._find_opener('wnba', mid)!r}")
@@ -210,6 +214,30 @@ def run_data(res):
     res.check("data", "stance: no team named -> unchanged",
               _roam._depossess("64-18 is the real best record", _T)
               == "64-18 is the real best record")
+
+
+    # The window between the last preseason game and the opener: every upcoming game is
+    # season type 2, but the season HASN'T started. The first version returned None here and
+    # silently stopped labelling the opener during the exact week it matters most. Records are
+    # the signal - before kickoff every team is 0-0.
+    res.check("data", "record '0-0' / '0-0-0' reads as no games played",
+              espn._record_is_blank("0-0") and espn._record_is_blank("0-0-0")
+              and espn._record_is_blank(""))
+    res.check("data", "record '1-0' / '12-4' reads as season under way",
+              not espn._record_is_blank("1-0") and not espn._record_is_blank("12-4"))
+
+    def _ev2(iso, rec):
+        return {"date": iso, "season": {"type": 2},
+                "status": {"type": {"state": "pre"}},
+                "competitions": [{"competitors": [
+                    {"records": [{"type": "total", "summary": rec}]}]}]}
+
+    unplayed = [_ev2("2026-09-10T00:20Z", "0-0"), _ev2("2026-09-11T00:35Z", "0-0")]
+    played = [_ev2("2026-10-10T00:20Z", "3-1"), _ev2("2026-10-11T00:35Z", "0-0")]
+    res.check("data", "opener still labelled after preseason ends, before kickoff",
+              espn._find_opener("nfl", unplayed) is unplayed[0])
+    res.check("data", "no opener once a regular-season game has been played",
+              espn._find_opener("nfl", played) is None)
 
     # league aliases
     res.check("data", "alias soccer -> wc", espn._league("soccer") == "wc")
@@ -995,8 +1023,14 @@ def run_integration(res):
         res.check("integration", "sports_player unknown-name path", False, str(e))
 
     try:
-        res.check("integration", "champion(ucl) = PSG (2025-26)",
-                  has_any(espn.champion("ucl"), "paris", "psg"))
+        # Assert the CONTRACT, not a calendar state. Once the next UCL season kicks off,
+        # champion() correctly reports the CURRENT season as undecided instead of returning
+        # last season's winner - so hardcoding "PSG" turns red on the season rollover and
+        # looks like a parser break. Either shape is right; a wrong-shaped answer is not.
+        ch = espn.champion("ucl")
+        res.check("integration", "champion(ucl): names a winner or says the season is open",
+                  has_any(ch, "paris", "psg") or has_any(ch, "isn't decided", "not decided"),
+                  ch[:100])
     except Exception as e:  # noqa: BLE001
         res.check("integration", "champion(ucl) reachable", False, str(e))
 

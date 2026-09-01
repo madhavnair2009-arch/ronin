@@ -44,7 +44,7 @@ autonomous **roam** loop (forms takes, proactively pings, reflects on allegiance
 
 ---
 
-## What the 2026-08-19 → 30 session shipped
+## What the 2026-08-19 → 09-01 session shipped
 
 Two user-visible bugs and a research pass. **Both bugs came from the owner's own Telegram
 screenshots again** — that's now six straight found by using the thing rather than by testing it.
@@ -87,7 +87,21 @@ volume (backed up first; dry-run showed 2 of 8 stances changing, exactly the two
 working answer to "how does a 200ms conversation wait on an ESPN lookup." `_load_system_prompt`
 is already most of a briefing assembler.
 
-### Gotchas earned 2026-08-19 → 30 (don't relearn these)
+**6. The opener gap, caught on the way out (`<this commit>`).** The first opener fix only
+labelled `SEASON OPENER:` while the next game was still PRESEASON. Once preseason ended (9/1) every
+upcoming game was season type 2, so the label silently vanished — during the exact week before
+kickoff when people actually ask. Records are the real signal: before kickoff every team is 0-0.
+Added `_season_started()` / `_record_is_blank()`. **It withholds the label when there is no record
+data at all** rather than asserting one on no evidence. Verified across NFL (labels again),
+NBA/NHL (preseason, labels), WNBA/MLB (mid-season, correctly silent), NCAAF (correctly silent —
+UAPB is already 1-0).
+
+**7. `champion(ucl)` test went stale on the season rollover.** It hardcoded "PSG (2025-26)"; once
+the 2026-27 League Phase began, `champion()` correctly reported the CURRENT season as undecided and
+the test read like a parser break. Now asserts the contract (names a winner OR says the season is
+open), not a calendar state.
+
+### Gotchas earned 2026-08-19 → 09-01 (don't relearn these)
 - **When a prompt rule "keeps not holding", check the tool actually does what the rule claims.**
   Two sessions of persona tuning went into enforcing a `sports_scoreboard` contract that never
   existed. The model was obeying; the tool was lying. Check the tool FIRST.
@@ -107,9 +121,19 @@ is already most of a briefing assembler.
   all-today (live/final, undated), and MIXED — last night's finals above tomorrow's dated games,
   which is what a preseason morning looks like. Assert only that whichever lines carry a date are
   earliest-first; asserting on the first line goes red on two of the three shapes.
-- **Verify a failure is pre-existing before calling it a regression.** Twice this session a red
-  looked like my change and wasn't: one was DDG being down, one was a case that runs 2/3 before
-  and 1/3 after (noise at n=3). `git stash` and re-run costs one command.
+- **Verify a failure is pre-existing before calling it a regression.** Three times this session a
+  red looked like my change and wasn't: DDG being down, a 2/3-vs-1/3 case (noise at n=3), and the
+  RJ Harvey case which then went 3/3 on re-run. `git stash` and re-run costs one command.
+- **Live-data tests rot on calendar boundaries, and they rot silently into looking like product
+  bugs.** Both integration reds on 2026-09-01 were the calendar moving, not code: preseason ended,
+  and the UCL season rolled over. Assert the CONTRACT ("dated lines are earliest-first", "names a
+  winner or says the season is open"), never a specific date, matchup or champion. This repo has
+  now been bitten by it three separate times.
+- **"Can't tell" must not resolve to a confident claim.** The opener label reads records to decide
+  whether a season has started; with no record data the honest answer is to withhold the label,
+  not to assert one. Two synthetic fixtures caught this because they predated records mattering —
+  when a fixture starts failing after a real change, check whether the FIXTURE is the unrealistic
+  part before "fixing" the code.
 
 ---
 

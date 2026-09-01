@@ -215,6 +215,41 @@ def _upcoming(key):
     return []
 
 
+def _record_is_blank(rec):
+    """True if a record string like '0-0' / '0-0-0' shows no games played."""
+    parts = (rec or "").replace("-", " ").split()
+    if not parts:
+        return True
+    try:
+        return all(int(x) == 0 for x in parts)
+    except ValueError:
+        return False
+
+
+def _season_started(events):
+    """Has any REGULAR-season game been played yet?
+
+    Needed because "the next game is preseason" is not the same question as "the regular
+    season hasn't started". Between the last preseason game and the opener, every upcoming
+    game is season type 2 and the old test silently stopped labelling the opener - exactly
+    over the week it matters most. Records are the reliable signal: before kickoff every
+    team is 0-0, and one played game shows up league-wide.
+    """
+    seen = False
+    for ev in events:
+        if _season_type(ev) != 2:
+            continue
+        for c in ((ev.get("competitions") or [{}])[0]).get("competitors", []):
+            for rr in c.get("records", []) or []:
+                if rr.get("type") in ("total", None):
+                    seen = True
+                    if not _record_is_blank(rr.get("summary")):
+                        return True
+    # No record data at all means we CAN'T TELL. Say the season has started, so the opener
+    # label is withheld rather than asserted on no evidence - never claim what isn't grounded.
+    return not seen
+
+
 def _find_opener(key, near):
     """The first REGULAR-season game, or None if the regular season is under way.
 
@@ -222,8 +257,12 @@ def _find_opener(key, near):
     horizon and an opener can sit outside it (NBA preseason opens ~3 weeks before
     the season), so widen the search rather than reporting no opener.
     """
-    if not near or _season_type(near[0]) != 1:
-        return None  # regular season already started; "opener" would be a mid-season game
+    if not near:
+        return None
+    # Preseason still running, OR the regular season is scheduled but not yet played. Anything
+    # else means we're mid-season and "opener" would name an ordinary game.
+    if _season_type(near[0]) != 1 and _season_started(near):
+        return None
     opener = next((e for e in near if _season_type(e) == 2), None)
     if opener is not None:
         return opener
